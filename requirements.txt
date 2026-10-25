@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-line-bot-sdk
+line-bot-sdk<3.0.0
 openai
 pydantic
 python-dotenv
