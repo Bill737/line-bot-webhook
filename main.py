@@ -1,9 +1,16 @@
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    Configuration,
+    ApiClient,
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage
+)
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import openai
 
 load_dotenv()
@@ -13,7 +20,7 @@ app = FastAPI()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -22,7 +29,7 @@ if OPENAI_API_KEY:
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "LINE Bot Webhook Server is running!"}
+    return {"status": "ok", "message": "LINE Bot Webhook Server (v3) is running!"}
 
 @app.post("/callback")
 async def callback(request: Request):
@@ -39,8 +46,8 @@ async def callback(request: Request):
 
     return "OK"
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_text_message(event):
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
     user_message = event.message.text
     reply_text = ""
 
@@ -61,10 +68,14 @@ def handle_text_message(event):
         reply_text = f"收到您的訊息：「{user_message}」。自由回答功能運作中！"
 
     try:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_text)
-        )
+        with ApiClient(configuration) as api_client:
+            messaging_api = MessagingApi(api_client)
+            messaging_api.reply_message_with_http_info(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
+            )
     except Exception as e:
         print(f"Error replying message: {e}")
 
