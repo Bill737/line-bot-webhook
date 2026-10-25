@@ -4,4 +4,4 @@ line-bot-sdk
 openai
 pydantic
 python-dotenv
-httpx
+requests
