@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import requests
@@ -38,22 +39,39 @@ def create_reply(user_message: str) -> str:
     if not GEMINI_API_KEY:
         return f"收到你的訊息：「{user_message}」。目前 AI 尚未設定，請稍後再試。"
 
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-            contents=user_message,
-            config=types.GenerateContentConfig(
-                system_instruction="你是友善、有幫助的 LINE 助理，請使用自然的繁體中文回答。",
-                max_output_tokens=2048,
-            ),
-        )
-        answer = (response.text or "").strip()
-        return answer[:5000] or "我暫時想不到合適的回答，請再試一次。"
-    except Exception as error:
-        # Keep credentials and provider response bodies out of application logs.
-        logger.error("Gemini request failed: %s", type(error).__name__)
-        return "抱歉，AI 服務暫時無法回答，請稍後再試。"
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+                contents=user_message,
+                config=types.GenerateContentConfig(
+                    system_instruction="你是友善、有幫助的 LINE 助理，請使用自然的繁體中文回答。",
+                    max_output_tokens=2048,
+                ),
+            )
+            answer = (response.text or "").strip()
+            return answer[:5000] or "我暫時想不到合適的回答，請再試一次。"
+        except Exception as error:
+            # Retry temporary Gemini overload/rate-limit errors, never log response bodies.
+            status_code = getattr(error, "code", None)
+            if status_code in {429, 500, 502, 503, 504} and attempt < 2:
+                delay = 1.5 ** (attempt + 1)
+                logger.warning(
+                    "Gemini temporary error: status=%s; retrying in %.1fs",
+                    status_code,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            logger.error(
+                "Gemini request failed: type=%s status=%s",
+                type(error).__name__,
+                status_code,
+            )
+            return "抱歉，AI 服務暫時無法回答，請稍後再試。"
+
+    return "抱歉，AI 服務暫時無法回答，請稍後再試。"
 
 
 def process_events(events: list[dict[str, Any]]) -> None:
