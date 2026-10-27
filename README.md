@@ -20,13 +20,15 @@
    - 啟用 **Use webhook**。
 
 2. **Render 環境變數**
-   在 Render 服務的 Environment 設定以下變數。LINE Token 和 OpenAI key 是不同憑證，請勿互換：
+   在 Render 服務的 Environment 設定以下變數。LINE Token 和 OpenAI key 是不同憑證，請勿互換。程式支援 `OPENAI_API_KEY`；為相容既有 Render 設定，也會讀取舊名稱 `apikey`：
    ```env
    LINE_CHANNEL_ACCESS_TOKEN=LINE Developers 簽發的 Channel Access Token
    LINE_CHANNEL_SECRET=您的ChannelSecret
    OPENAI_API_KEY=OpenAI API Key
    ```
    設定後重新部署服務。`OPENAI_MODEL` 為選填，預設為 `gpt-4o-mini`。
+
+   開啟服務首頁可查看 `ai_enabled`、`line_reply_configured` 與 `webhook_signature_configured` 狀態；只顯示是否有設定，不會顯示任何憑證內容。
 
 3. **安裝與運行**
    ```bash

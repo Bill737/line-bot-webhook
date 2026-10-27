@@ -9,7 +9,7 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -19,7 +19,8 @@ app = FastAPI()
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# Keep the Render variable name already in use while supporting the documented name.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("apikey", "")
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
@@ -50,8 +51,15 @@ def create_reply(user_message: str) -> str:
         )
         answer = (response.choices[0].message.content or "").strip()
         return answer[:5000] or "我暫時想不到合適的回答，請再試一次。"
-    except Exception:
-        logger.exception("AI response generation failed")
+    except APIStatusError as error:
+        logger.error(
+            "OpenAI request failed: status=%s request_id=%s",
+            error.status_code,
+            error.request_id,
+        )
+        return "抱歉，AI 服務暫時無法回答，請稍後再試。"
+    except Exception as error:
+        logger.error("OpenAI request failed: %s", type(error).__name__)
         return "抱歉，我現在暫時無法產生回答，請稍後再試。"
 
 
@@ -91,7 +99,13 @@ def process_events(events: list[dict[str, Any]]) -> None:
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "LINE Bot Webhook Server is running"}
+    return {
+        "status": "ok",
+        "message": "LINE Bot Webhook Server is running",
+        "ai_enabled": bool(OPENAI_API_KEY),
+        "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
+        "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
+    }
 
 
 @app.post("/callback")
