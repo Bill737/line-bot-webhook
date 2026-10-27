@@ -5,7 +5,7 @@
 
 ## 功能特色
 - **Webhook 接收**：處理來自 LINE Platform 的 `POST /callback` 請求，驗證 LINE 簽章 (`X-Line-Signature`)。
-- **自由回答（AI 整合）**：設定 OpenAI API Key 後使用 GPT 回答；未設定時回覆提示訊息。
+- **自由回答（AI 整合）**：設定 Gemini API Key 後使用 Gemini 回答；未設定時回覆提示訊息。
 - **隱私保護**：不在日誌輸出訊息本文、Webhook body、reply token 或憑證。
 - **快速部署**：完整支援 GitHub 託管與部署。
 
@@ -20,13 +20,13 @@
    - 啟用 **Use webhook**。
 
 2. **Render 環境變數**
-   在 Render 服務的 Environment 設定以下變數。LINE Token 和 OpenAI key 是不同憑證，請勿互換。程式支援 `OPENAI_API_KEY`；為相容既有 Render 設定，也會讀取舊名稱 `apikey`：
+   在 Render 服務的 Environment 設定以下變數。LINE Token 和 Gemini key 是不同憑證，請勿互換。程式支援 `GEMINI_API_KEY`；為相容既有 Render 設定，也會讀取舊名稱 `apikey`（請將該變數值換成 Gemini API key）：
    ```env
    LINE_CHANNEL_ACCESS_TOKEN=LINE Developers 簽發的 Channel Access Token
    LINE_CHANNEL_SECRET=您的ChannelSecret
-   OPENAI_API_KEY=OpenAI API Key
+   GEMINI_API_KEY=Google AI Studio API Key
    ```
-   設定後重新部署服務。`OPENAI_MODEL` 為選填，預設為 `gpt-4o-mini`。
+   設定後重新部署服務。`GEMINI_MODEL` 為選填，預設為 `gemini-3.8-flash`。
 
    開啟服務首頁可查看 `ai_enabled`、`line_reply_configured` 與 `webhook_signature_configured` 狀態；只顯示是否有設定，不會顯示任何憑證內容。
 
