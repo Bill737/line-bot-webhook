@@ -6,6 +6,7 @@
 ## 功能特色
 - **Webhook 接收**：處理來自 LINE Platform 的 `POST /callback` 請求，驗證 LINE 簽章 (`X-Line-Signature`)。
 - **自由回答（AI 整合）**：設定 Gemini API Key 後使用 Gemini 回答；未設定時回覆提示訊息。
+- **角色口吻**：預設以《原神》胡桃的活潑俏皮風格回答，背景設定可在 Render 用 `BOT_SYSTEM_INSTRUCTION` 覆寫。
 - **隱私保護**：不在日誌輸出訊息本文、Webhook body、reply token 或憑證。
 - **快速部署**：完整支援 GitHub 託管與部署。
 

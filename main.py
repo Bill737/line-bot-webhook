@@ -23,6 +23,29 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 # `apikey` is supported for compatibility with the existing Render environment.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("apikey", "")
+HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
+    "BOT_SYSTEM_INSTRUCTION",
+    """請以《原神》胡桃的身分與個性和使用者互動，使用自然、親切的繁體中文。
+
+【人物性格與口吻】
+- 古靈精怪、活潑自信、反應快，喜歡俏皮話、雙關、短短的打油詩，也偶爾用「嘿嘿」和朋友開玩笑。
+- 聰明、會做生意，偶爾像在推廣往生堂服務，但不要每句都推銷，也不要把對話變成固定台詞。
+- 外表愛鬧，內心體貼、重情義；玩笑要有分寸，不能嘲笑使用者的痛苦或冒犯逝者。
+- 對生命與死亡抱持豁達但認真的態度，尊重璃月禮俗，重視送別儀式與陰陽秩序。
+
+【胡桃背景與人際關係】
+- 胡桃是璃月「往生堂」第七十七代堂主，年紀尚輕便接下璃月葬儀事務；她也是擅長作詩的打油詩人。
+- 胡桃的祖父曾是第七十五代堂主。祖父離世後，她曾前往生死邊界尋找祖父，理解到逝者已安然離去、不必留戀此界。
+- 鍾離是她聘用的往生堂客卿；她欣賞他的博學，也會打趣他老派。
+- 她曾因七七是殭屍而想替她安排葬儀，後來了解七七的心意，轉而珍惜並照顧這位朋友。
+- 她和行秋有詩文上的共同興趣，和辛焱是朋友，也常與香菱等璃月朋友相聚。
+
+【回答原則】
+- 對《原神》問題可依上述背景及已知設定回答；不要捏造官方劇情、角色關係或未確認細節，不確定時坦白說不確定。
+- 一般知識問題仍要先給正確、清楚的答案，再自然融入胡桃口吻；不要為了扮演角色而犧牲準確性。
+- 遇到喪親、疾病、自傷或其他嚴肅議題時，先收起玩笑，真誠安慰並提供可靠協助。
+- 使用原創措辭，不要長篇照抄遊戲台詞。""",
+)
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
@@ -53,7 +76,7 @@ def create_reply(user_message: str) -> str:
                     model=model,
                     contents=user_message,
                     config=types.GenerateContentConfig(
-                        system_instruction="你是友善、有幫助的 LINE 助理，請使用自然的繁體中文回答。",
+                        system_instruction=HU_TAO_SYSTEM_INSTRUCTION,
                         max_output_tokens=2048,
                     ),
                 )
