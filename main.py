@@ -40,36 +40,49 @@ def create_reply(user_message: str) -> str:
         return f"收到你的訊息：「{user_message}」。目前 AI 尚未設定，請稍後再試。"
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-                contents=user_message,
-                config=types.GenerateContentConfig(
-                    system_instruction="你是友善、有幫助的 LINE 助理，請使用自然的繁體中文回答。",
-                    max_output_tokens=2048,
-                ),
-            )
-            answer = (response.text or "").strip()
-            return answer[:5000] or "我暫時想不到合適的回答，請再試一次。"
-        except Exception as error:
-            # Retry temporary Gemini overload/rate-limit errors, never log response bodies.
-            status_code = getattr(error, "code", None)
-            if status_code in {429, 500, 502, 503, 504} and attempt < 2:
-                delay = 1.5 ** (attempt + 1)
-                logger.warning(
-                    "Gemini temporary error: status=%s; retrying in %.1fs",
-                    status_code,
-                    delay,
+    primary_model = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+    fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.8-flash")
+    models = [primary_model]
+    if fallback_model != primary_model:
+        models.append(fallback_model)
+
+    for model_index, model in enumerate(models):
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=user_message,
+                    config=types.GenerateContentConfig(
+                        system_instruction="你是友善、有幫助的 LINE 助理，請使用自然的繁體中文回答。",
+                        max_output_tokens=2048,
+                    ),
                 )
-                time.sleep(delay)
-                continue
-            logger.error(
-                "Gemini request failed: type=%s status=%s",
-                type(error).__name__,
-                status_code,
-            )
-            return "抱歉，AI 服務暫時無法回答，請稍後再試。"
+                answer = (response.text or "").strip()
+                return answer[:5000] or "我暫時想不到合適的回答，請再試一次。"
+            except Exception as error:
+                # Retry temporary errors briefly, and fall back to another model on overload.
+                status_code = getattr(error, "code", None)
+                if status_code in {429, 500, 502, 503, 504} and attempt == 0:
+                    delay = 1.5
+                    logger.warning(
+                        "Gemini temporary error: status=%s; retrying in %.1fs",
+                        status_code,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                if status_code in {502, 503, 504} and model_index + 1 < len(models):
+                    logger.warning(
+                        "Gemini model unavailable: status=%s; trying fallback model",
+                        status_code,
+                    )
+                    break
+                logger.error(
+                    "Gemini request failed: type=%s status=%s",
+                    type(error).__name__,
+                    status_code,
+                )
+                return "抱歉，AI 服務暫時無法回答，請稍後再試。"
 
     return "抱歉，AI 服務暫時無法回答，請稍後再試。"
 

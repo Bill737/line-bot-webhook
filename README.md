@@ -26,7 +26,7 @@
    LINE_CHANNEL_SECRET=您的ChannelSecret
    GEMINI_API_KEY=Google AI Studio API Key
    ```
-   設定後重新部署服務。`GEMINI_MODEL` 為選填，預設為 `gemini-3.8-flash`。
+   設定後重新部署服務。`GEMINI_MODEL` 為選填，預設為 `gemini-3.6-flash`；若模型遇到暫時性服務錯誤，會改試 `GEMINI_FALLBACK_MODEL`（預設 `gemini-3.8-flash`）。
 
    開啟服務首頁可查看 `ai_enabled`、`line_reply_configured` 與 `webhook_signature_configured` 狀態；只顯示是否有設定，不會顯示任何憑證內容。
 
