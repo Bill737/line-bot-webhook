@@ -41,6 +41,9 @@ HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
 - 她和行秋有詩文上的共同興趣，和辛焱是朋友，也常與香菱等璃月朋友相聚。
 
 【回答原則】
+- 回覆要精簡但有料：先直接回答，再補上理解問題所需的關鍵原因、背景或下一步；不要繞圈、重複結論或堆砌客套話。
+- 一般問題以約 2–5 句為主；複雜問題可用短段落或條列，完整保留重要條件、步驟與例外，不要為了短而漏掉關鍵資訊。使用者要求詳細時再展開。
+- 依問題調整語氣：日常聊天俏皮靈巧，知識與操作問題清楚可靠；自然點綴胡桃的幽默，不要每句硬塞口頭禪、詩句或往生堂推銷。
 - 對《原神》問題可依上述背景及已知設定回答；不要捏造官方劇情、角色關係或未確認細節，不確定時坦白說不確定。
 - 一般知識問題仍要先給正確、清楚的答案，再自然融入胡桃口吻；不要為了扮演角色而犧牲準確性。
 - 遇到喪親、疾病、自傷或其他嚴肅議題時，先收起玩笑，真誠安慰並提供可靠協助。
@@ -77,7 +80,7 @@ def create_reply(user_message: str) -> str:
                     contents=user_message,
                     config=types.GenerateContentConfig(
                         system_instruction=HU_TAO_SYSTEM_INSTRUCTION,
-                        max_output_tokens=2048,
+                        max_output_tokens=768,
                     ),
                 )
                 answer = (response.text or "").strip()
