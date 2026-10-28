@@ -24,6 +24,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 # `apikey` is supported for compatibility with the existing Render environment.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("apikey", "")
+GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "data/hu_tao_memory.sqlite3")
 HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
     "BOT_SYSTEM_INSTRUCTION",
@@ -143,8 +144,10 @@ def update_memory_summary(
 def record_interaction(user_id: str, user_message: str, reply: str) -> None:
     try:
         old_summary, affection, _ = get_user_state(user_id)
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        model = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+        client = GEMINI_CLIENT
+        if client is None:
+            return
+        model = os.getenv("GEMINI_FAST_MODEL", "gemini-3.5-flash-lite")
         updated_memory = update_memory_summary(
             client, model, old_summary, user_message, reply
         )
@@ -214,12 +217,15 @@ def create_reply(user_message: str, user_id: str | None = None) -> str:
         logger.warning("Could not read user memory: type=%s", type(error).__name__)
         memory, affection, interactions = "", 0, 0
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    primary_model = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-    fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.8-flash")
-    models = [primary_model]
-    if fallback_model != primary_model:
-        models.append(fallback_model)
+    client = GEMINI_CLIENT
+    if client is None:
+        return "抱歉，AI 服務暫時無法回答，請稍後再試。"
+    primary_model = os.getenv("GEMINI_FAST_MODEL", "gemini-3.5-flash-lite")
+    fallback_models = [
+        os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
+        os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.8-flash"),
+    ]
+    models = list(dict.fromkeys([primary_model, *fallback_models]))
 
     for model_index, model in enumerate(models):
         for attempt in range(2):

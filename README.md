@@ -29,7 +29,7 @@
    LINE_CHANNEL_SECRET=您的ChannelSecret
    GEMINI_API_KEY=Google AI Studio API Key
    ```
-   設定後重新部署服務。`GEMINI_MODEL` 為選填，預設為 `gemini-3.6-flash`；若模型遇到暫時性服務錯誤，會改試 `GEMINI_FALLBACK_MODEL`（預設 `gemini-3.8-flash`）。
+   設定後重新部署服務。一般回覆預設使用較快的 `gemini-3.5-flash-lite`，可用 `GEMINI_FAST_MODEL` 更改；遇到暫時性服務錯誤時，依序改試 `GEMINI_MODEL`（預設 `gemini-3.6-flash`）與 `GEMINI_FALLBACK_MODEL`（預設 `gemini-3.8-flash`）。
 
    記憶資料庫預設為 `data/hu_tao_memory.sqlite3`，可用 `MEMORY_DB_PATH` 更改。Render 免費執行個體沒有持久磁碟，休眠、重啟或重新部署會清除本機記憶。要跨休眠與部署保留記憶，請使用支援持久儲存的方案並把 `MEMORY_DB_PATH` 指向掛載磁碟，例如 `/var/data/hu_tao_memory.sqlite3`。目前不會自動將聊天內容傳送到其他資料庫服務。
 
