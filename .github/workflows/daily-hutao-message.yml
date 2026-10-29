@@ -1,0 +1,59 @@
+name: Daily Hu Tao LINE message
+
+on:
+  schedule:
+    # 09:00 Asia/Taipei (UTC+8).
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-hutao-line-message
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send daily message
+        env:
+          PUSH_API_KEY: ${{ secrets.PUSH_API_KEY }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          PUSH_TEXT: ${{ vars.PUSH_TEXT }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          api_key = os.environ.get("PUSH_API_KEY", "")
+          user_id = os.environ.get("LINE_USER_ID", "")
+          text = os.environ.get("PUSH_TEXT") or "嘿，今天也要好好照顧自己喔！有空就來找胡桃聊聊，嘿嘿。"
+          if len(api_key) < 32 or not user_id:
+              print("Configure the PUSH_API_KEY and LINE_USER_ID repository secrets before enabling scheduled sends.")
+              sys.exit(1)
+
+          payload = json.dumps({"to": user_id, "text": text}).encode("utf-8")
+          request = urllib.request.Request(
+              "https://line-bot-webhook-thi0.onrender.com/push",
+              data=payload,
+              headers={
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  print(f"Push request completed with HTTP {response.status}.")
+                  print(response.read().decode("utf-8"))
+          except urllib.error.HTTPError as error:
+              print(f"Push request failed with HTTP {error.code}.")
+              print(error.read().decode("utf-8"))
+              sys.exit(1)
+          PY
