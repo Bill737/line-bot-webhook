@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   push:
+    if: ${{ vars.ENABLE_DAILY_PUSH == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
