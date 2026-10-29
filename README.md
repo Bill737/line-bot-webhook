@@ -9,6 +9,7 @@
 - **角色口吻**：預設以《原神》胡桃的活潑俏皮風格回答，背景設定可在 Render 用 `BOT_SYSTEM_INSTRUCTION` 覆寫。
 - **個人長期記憶與好感度**：依 LINE 使用者分開保存精簡記憶摘要、互動次數與熟悉程度；回覆後更新，不保存完整聊天紀錄。傳送「忘記我」、「清除記憶」或「重置記憶」可清除該使用者的記憶與好感度。
 - **完整長回答**：提高回答額度；長文依句子、段落或詞語邊界拆成多個 LINE 氣泡，不直接裁掉尾端內容。
+- **主動推送**：受 `PUSH_API_KEY` 保護的 `POST /push` 可推送文字到指定 LINE 對象；文字按句子整理成多個氣泡，每批最多 5 則，長訊息會分批呼叫 LINE Push API。
 - **隱私保護**：不在日誌輸出訊息本文、Webhook body、reply token 或憑證。
 - **快速部署**：完整支援 GitHub 託管與部署。
 
@@ -32,6 +33,15 @@
    設定後重新部署服務。一般回覆預設使用較快的 `gemini-3.5-flash-lite`，可用 `GEMINI_FAST_MODEL` 更改；遇到暫時性服務錯誤時，依序改試 `GEMINI_MODEL`（預設 `gemini-3.6-flash`）與 `GEMINI_FALLBACK_MODEL`（預設 `gemini-3.8-flash`）。
 
    記憶資料庫預設為 `data/hu_tao_memory.sqlite3`，可用 `MEMORY_DB_PATH` 更改。Render 免費執行個體沒有持久磁碟，休眠、重啟或重新部署會清除本機記憶。要跨休眠與部署保留記憶，請使用支援持久儲存的方案並把 `MEMORY_DB_PATH` 指向掛載磁碟，例如 `/var/data/hu_tao_memory.sqlite3`。目前不會自動將聊天內容傳送到其他資料庫服務。
+
+   主動推送需另外在 Render Environment 設定至少 32 字元的隨機 `PUSH_API_KEY`；未設定時 `/push` 會停用。呼叫時使用 `Authorization: Bearer <PUSH_API_KEY>`，JSON 欄位為 `to`（LINE user/group/room ID）與 `text`（最多 20,000 字元）。不要把此金鑰貼在聊天或寫進程式碼。
+
+   ```bash
+   curl -X POST https://line-bot-webhook-thi0.onrender.com/push \
+     -H "Authorization: Bearer $PUSH_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"to":"LINE_USER_ID","text":"第一句。第二句。第三句。"}'
+   ```
 
    開啟服務首頁可查看 `ai_enabled`、`line_reply_configured` 與 `webhook_signature_configured` 狀態；只顯示是否有設定，不會顯示任何憑證內容。
 

@@ -4,15 +4,17 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from google import genai
 from google.genai import types
+from pydantic import BaseModel, Field
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -22,6 +24,7 @@ app = FastAPI()
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+PUSH_API_KEY = os.getenv("PUSH_API_KEY", "")
 # `apikey` is supported for compatibility with the existing Render environment.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("apikey", "")
 GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -156,37 +159,62 @@ def record_interaction(user_id: str, user_message: str, reply: str) -> None:
         logger.warning("Could not record user interaction: type=%s", type(error).__name__)
 
 
-def split_line_text(text: str, limit: int = 4500) -> list[str]:
-    """Split long answers into LINE-sized bubbles without dropping their content."""
-    remaining = text.strip()
+def split_sentences(text: str, limit: int = 4500) -> list[str]:
+    """Split text at sentence boundaries, further splitting only oversized sentences."""
+    sentences = [part.strip() for part in re.split(r"(?<=[。！？!?；;])|\n+", text.strip())]
     chunks: list[str] = []
-    sentence_marks = "。！？!?\n"
-    clause_marks = "；;，,、 "
-    while len(remaining) > limit:
-        window = remaining[:limit]
-        boundary = -1
-        # Prefer a sentence break near the limit, then a clause/word boundary.
-        for marks in (sentence_marks, clause_marks):
-            positions = [window.rfind(mark) for mark in marks]
-            candidate = max(positions, default=-1)
-            if candidate >= limit * 0.75:
-                boundary = candidate
-                break
-        if boundary < 0:
-            for marks in (sentence_marks, clause_marks):
-                boundary = max((window.rfind(mark) for mark in marks), default=-1)
-                if boundary > 0:
-                    break
-        end = boundary + 1 if boundary >= 0 else limit
-        chunk = remaining[:end].strip()
-        if not chunk:
-            end = limit
-            chunk = remaining[:end].strip()
-        chunks.append(chunk)
-        remaining = remaining[end:].lstrip()
-    if remaining:
-        chunks.append(remaining)
+    for sentence in filter(None, sentences):
+        remaining = sentence
+        while len(remaining) > limit:
+            window = remaining[:limit]
+            boundary = max(window.rfind(mark) for mark in "，,、 " )
+            end = boundary + 1 if boundary >= limit * 0.75 else limit
+            chunks.append(remaining[:end].strip())
+            remaining = remaining[end:].lstrip()
+        if remaining:
+            chunks.append(remaining)
     return chunks or ["我暫時想不到合適的回答，請再試一次。"]
+
+
+def sentence_messages(text: str, target_chars: int = 900) -> list[str]:
+    """Group adjacent sentences into manageable, sentence-aligned LINE messages."""
+    messages: list[str] = []
+    current = ""
+    for sentence in split_sentences(text):
+        candidate = f"{current}\n{sentence}" if current else sentence
+        if current and len(candidate) > target_chars:
+            messages.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        messages.append(current)
+    return messages
+
+
+def reply_bubbles(text: str, max_bubbles: int = 5) -> list[str]:
+    """Fit all generated text into LINE's five-message reply limit."""
+    sentences = split_sentences(text)
+    if len(sentences) <= max_bubbles:
+        return sentences
+    target_size = (len(text) + max_bubbles - 1) // max_bubbles
+    bubbles: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = f"{current}\n{sentence}" if current else sentence
+        if current and len(candidate) > target_size and len(bubbles) < max_bubbles - 1:
+            bubbles.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        bubbles.append(current)
+    return bubbles
+
+
+class PushRequest(BaseModel):
+    to: str = Field(min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=20000)
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
@@ -287,7 +315,7 @@ def process_events(events: list[dict[str, Any]]) -> None:
 
         source = event.get("source") or {}
         reply_text = create_reply(message.get("text", ""), source.get("userId"))
-        reply_messages = split_line_text(reply_text)
+        reply_messages = reply_bubbles(reply_text)
         try:
             response = requests.post(
                 "https://api.line.me/v2/bot/message/reply",
@@ -324,9 +352,60 @@ def health_check():
         "ai_enabled": bool(GEMINI_API_KEY),
         "ai_provider": "gemini",
         "user_memory_enabled": True,
+        "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
     }
+
+
+@app.post("/push")
+def proactive_push(
+    payload: PushRequest,
+    authorization: str | None = Header(default=None),
+):
+    if len(PUSH_API_KEY) < 32:
+        raise HTTPException(status_code=503, detail="Proactive push is not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    provided_key = authorization.removeprefix("Bearer ")
+    if not hmac.compare_digest(provided_key, PUSH_API_KEY):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        raise HTTPException(status_code=503, detail="LINE push is not configured")
+
+    messages = sentence_messages(payload.text)
+    batches = [messages[index:index + 5] for index in range(0, len(messages), 5)]
+    for batch_index, batch in enumerate(batches):
+        try:
+            response = requests.post(
+                "https://api.line.me/v2/bot/message/push",
+                headers={
+                    "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "to": payload.to,
+                    "messages": [{"type": "text", "text": item} for item in batch],
+                },
+                timeout=10,
+            )
+        except requests.RequestException as error:
+            logger.warning("LINE proactive push failed: type=%s", type(error).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Push batch {batch_index + 1} failed; earlier batches may have been sent",
+            ) from None
+        if not response.ok:
+            logger.error("LINE proactive push failed with HTTP %s", response.status_code)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Push batch {batch_index + 1} failed; earlier batches may have been sent",
+            )
+        logger.info("LINE proactive push batch sent: %s/%s", batch_index + 1, len(batches))
+        if batch_index + 1 < len(batches):
+            time.sleep(0.2)
+
+    return {"status": "sent", "messages": len(messages), "batches": len(batches)}
 
 
 @app.post("/callback")
