@@ -212,11 +212,26 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
         if match:
             result = connection.execute("DELETE FROM user_notes WHERE id=? AND user_id=?", (int(match.group(1)), user_id))
             return "記事刪除完成。" if result.rowcount else "找不到這筆記事，先傳「記事列表」看看編號吧。"
-        match = re.fullmatch(r"提醒\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})\s+(.+)", command)
+        # Accept both the documented absolute date format and common Chinese
+        # relative dates so a natural reminder request is not silently sent to AI.
+        match = re.fullmatch(r"提醒(?:我)?\s+(?:(\d{4})[-/](\d{1,2})[-/](\d{1,2})|(今天|明天))\s+(?:(\d{1,2}):(\d{2})|(早上|上午|下午|晚上)\s*(\d{1,2})(?:點|点)(?:(\d{1,2})分?)?)\s+(.+)", command)
         if match:
-            year, month, day, hour, minute = map(int, match.groups()[:5])
-            content = match.group(6).strip()
+            year, month, day, relative, hour, minute, meridiem, cn_hour, cn_minute, content = match.groups()
             try:
+                if relative:
+                    base_date = datetime.now(TAIPEI_TZ).date()
+                    target_date = base_date + timedelta(days=1 if relative == "明天" else 0)
+                    year, month, day = target_date.year, target_date.month, target_date.day
+                else:
+                    year, month, day = int(year), int(month), int(day)
+                if cn_hour is not None:
+                    hour = int(cn_hour) % 12
+                    if meridiem in {"下午", "晚上"}:
+                        hour += 12
+                    minute = int(cn_minute or 0)
+                else:
+                    hour, minute = int(hour), int(minute)
+                content = content.strip()
                 due = datetime(year, month, day, hour, minute, tzinfo=TAIPEI_TZ)
             except ValueError:
                 return "日期時間不太對喔。請用：提醒 2026-11-05 09:30 記得帶傘"
@@ -231,6 +246,8 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
         if match:
             result = connection.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
             return "提醒取消啦。" if result.rowcount else "找不到這筆待辦提醒，傳「提醒列表」查看編號吧。"
+        if command.startswith("提醒"):
+            return "提醒格式可以用：\n・提醒 2026-11-05 09:30 記得帶傘\n・提醒我 明天 下午 3 點 開會\n・提醒列表\n時間以台灣時間（UTC+8）計算。"
     return None
 
 
