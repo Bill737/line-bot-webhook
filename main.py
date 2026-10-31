@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import hmac
-import html
 import json
 import logging
 import os
@@ -10,7 +9,6 @@ import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -359,93 +357,6 @@ def reply_bubbles(text: str, max_bubbles: int = 5) -> list[str]:
     return bubbles
 
 
-IMAGE_SEARCH_STOP_PHRASES = (
-    "可以請你", "可以幫我", "請幫我", "麻煩你", "請問", "告訴我", "介紹一下",
-    "幫我找", "幫我查", "給我看看", "可以說明", "跟我說", "我想知道", "我想了解",
-    "我想看", "你覺得", "是什麼", "怎麼樣", "相關圖片", "相關照片",
-)
-IMAGE_SKIP_TERMS = (
-    "自殺", "自傷", "輕生", "喪親", "喪偶", "癌症", "重病", "被家暴", "被霸凌",
-    "身分證", "身份證", "銀行帳號", "信用卡", "密碼", "API key", "api金鑰", "驗證碼",
-    "住址", "電話號碼", "病歷", "診斷", "投資建議", "薪水", "憂鬱", "焦慮",
-    "我最近", "我的病", "我朋友", "我家人", "我爸", "我媽", "阿嬤", "阿公",
-    "我老公", "我老婆", "我的孩子", "家暴", "失戀",
-)
-
-
-def find_topic_image(user_message: str, reply_text: str) -> dict[str, str] | None:
-    """Find one appropriately licensed topic image on Wikimedia Commons."""
-    if not user_message or any(term.casefold() in user_message.casefold() for term in IMAGE_SKIP_TERMS):
-        return None
-    topic = user_message.strip()
-    for phrase in IMAGE_SEARCH_STOP_PHRASES:
-        topic = topic.replace(phrase, " ")
-    topic = re.sub(r"[\r\n\t，。！？、；：,.!?;:()（）\[\]{}<>「」『』\"'`]+", " ", topic)
-    if re.search(r"(?i)(?:https?://|www\.|[\w.+-]+@[\w.-]+\.[a-z]{2,}|\b\d{7,}\b|Bearer\s+\S+|\b[A-Za-z0-9_-]{32,}\b)", topic):
-        return None
-    topic = re.sub(r"\s+", " ", topic).strip()
-    if len(topic) < 2:
-        topic = re.split(r"(?<=[。！？!?；;])|\n", reply_text.strip())[0][:120]
-    if len(topic) < 2:
-        return None
-    if len(topic) > 80:
-        return None
-
-    try:
-        response = requests.get(
-            "https://commons.wikimedia.org/w/api.php",
-            params={
-                "action": "query",
-                "format": "json",
-                "generator": "search",
-                "gsrsearch": topic,
-                "gsrnamespace": 6,
-                "gsrlimit": 5,
-                "prop": "imageinfo",
-                "iiprop": "url|mime|extmetadata",
-                "iiextmetadatafilter": "LicenseShortName|Artist|Credit",
-                "iiurlwidth": 480,
-            },
-            headers={"User-Agent": "HuTaoLineBot/1.0 (https://github.com/Bill737/line-bot-webhook)"},
-            timeout=2.5,
-        )
-        response.raise_for_status()
-        pages = response.json().get("query", {}).get("pages", {}).values()
-    except (requests.RequestException, ValueError, TypeError) as error:
-        logger.info("Topic image search unavailable: type=%s", type(error).__name__)
-        return None
-
-    for page in pages:
-        image_info = (page.get("imageinfo") or [{}])[0]
-        image_url = image_info.get("thumburl")
-        mime_type = image_info.get("thumbmime") or image_info.get("mime")
-        if not image_url or not image_url.startswith("https://") or mime_type not in {"image/jpeg", "image/png"}:
-            continue
-
-        metadata = image_info.get("extmetadata") or {}
-
-        def metadata_text(key: str, limit: int = 120) -> str:
-            raw = metadata.get(key, {}).get("value", "")
-            clean = html.unescape(re.sub(r"<[^>]*>", " ", str(raw)))
-            return re.sub(r"\s+", " ", clean).strip()[:limit]
-
-        title = str(page.get("title", "Wikimedia Commons image"))
-        page_url = "https://commons.wikimedia.org/wiki/" + quote(title.replace(" ", "_"), safe="_:/")
-        credits = [f"Wikimedia Commons：{title.removeprefix('File:')[:100]}"]
-        artist = metadata_text("Artist", 100) or metadata_text("Credit", 100)
-        license_name = metadata_text("LicenseShortName", 60)
-        if artist:
-            credits.append(f"作者：{artist}")
-        if license_name:
-            credits.append(f"授權：{license_name}")
-        credits.append(f"來源：{page_url}")
-        return {
-            "url": image_url,
-            "credit": "相關圖片｜" + "｜".join(credits),
-        }
-    return None
-
-
 class PushRequest(BaseModel):
     to: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=20000)
@@ -557,25 +468,8 @@ def process_events(events: list[dict[str, Any]]) -> None:
             continue
 
         source = event.get("source") or {}
-        user_message = message.get("text", "")
-        reply_text = create_reply(user_message, source.get("userId"))
-        is_personal_command = user_message.strip().startswith(("記事", "提醒", "忘記我", "清除記憶", "重置記憶"))
-        topic_image = None if is_personal_command else find_topic_image(user_message, reply_text)
-        if topic_image:
-            # Reserve two of LINE's five reply slots for attribution and the image itself.
-            reply_messages = [
-                *({"type": "text", "text": chunk} for chunk in reply_bubbles(reply_text, max_bubbles=3)),
-                {"type": "text", "text": topic_image["credit"]},
-                {
-                    "type": "image",
-                    "originalContentUrl": topic_image["url"],
-                    "previewImageUrl": topic_image["url"],
-                },
-            ]
-        else:
-            reply_messages = [
-                {"type": "text", "text": chunk} for chunk in reply_bubbles(reply_text)
-            ]
+        reply_text = create_reply(message.get("text", ""), source.get("userId"))
+        reply_messages = reply_bubbles(reply_text)
         try:
             response = requests.post(
                 "https://api.line.me/v2/bot/message/reply",
@@ -585,7 +479,9 @@ def process_events(events: list[dict[str, Any]]) -> None:
                 },
                 json={
                     "replyToken": reply_token,
-                    "messages": reply_messages,
+                    "messages": [
+                        {"type": "text", "text": chunk} for chunk in reply_messages
+                    ],
                 },
                 timeout=10,
             )
@@ -611,7 +507,6 @@ def health_check():
         "ai_enabled": bool(GEMINI_API_KEY),
         "ai_provider": "gemini",
         "user_memory_enabled": True,
-        "topic_images_enabled": True,
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
