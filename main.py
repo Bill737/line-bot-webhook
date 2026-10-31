@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -29,6 +30,7 @@ PUSH_API_KEY = os.getenv("PUSH_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("apikey", "")
 GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "data/hu_tao_memory.sqlite3")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
     "BOT_SYSTEM_INSTRUCTION",
     """請以《原神》胡桃的身分與個性和使用者互動，使用自然、親切的繁體中文。
@@ -58,11 +60,53 @@ HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
 )
 
 
-def init_memory_db() -> None:
+class PostgresConnection:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self.connection.__exit__(*args)
+
+    def execute(self, sql, params=()):
+        return self.connection.execute(sql.replace("?", "%s"), params)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+
+def open_database():
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        return PostgresConnection(psycopg.connect(DATABASE_URL, row_factory=dict_row))
     db_dir = os.path.dirname(MEMORY_DB_PATH)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
-    with sqlite3.connect(MEMORY_DB_PATH, timeout=10) as connection:
+    return sqlite3.connect(MEMORY_DB_PATH, timeout=10)
+
+
+def init_memory_db() -> None:
+    if DATABASE_URL:
+        with open_database() as connection:
+            connection.execute("""CREATE TABLE IF NOT EXISTS user_memory (
+                user_id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '',
+                affection INTEGER NOT NULL DEFAULT 0, interactions INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS user_notes (
+                id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, content TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            connection.execute("""CREATE TABLE IF NOT EXISTS reminders (
+                id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, content TEXT NOT NULL,
+                remind_at TIMESTAMPTZ NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at)")
+        return
+    with open_database() as connection:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS user_memory (
                 user_id TEXT PRIMARY KEY,
@@ -72,18 +116,41 @@ def init_memory_db() -> None:
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS user_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                remind_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at)"
+        )
 
 
 init_memory_db()
 
 
 def get_user_state(user_id: str) -> tuple[str, int, int]:
-    with sqlite3.connect(MEMORY_DB_PATH, timeout=10) as connection:
+    with open_database() as connection:
         row = connection.execute(
             "SELECT summary, affection, interactions FROM user_memory WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-    return (row[0], row[1], row[2]) if row else ("", 0, 0)
+    if not row:
+        return "", 0, 0
+    return (row["summary"], row["affection"], row["interactions"]) if DATABASE_URL else (row[0], row[1], row[2])
 
 
 def affection_level(score: int) -> str:
@@ -97,13 +164,14 @@ def affection_level(score: int) -> str:
 
 
 def save_user_state(user_id: str, summary: str, affection: int) -> None:
-    with sqlite3.connect(MEMORY_DB_PATH, timeout=10) as connection:
+    with open_database() as connection:
+        cap_expression = "LEAST(user_memory.affection + 1, 100)" if DATABASE_URL else "MIN(user_memory.affection + 1, 100)"
         connection.execute(
-            """INSERT INTO user_memory (user_id, summary, affection, interactions)
+            f"""INSERT INTO user_memory (user_id, summary, affection, interactions)
                VALUES (?, ?, ?, 1)
                ON CONFLICT(user_id) DO UPDATE SET
                    summary = excluded.summary,
-                   affection = MIN(user_memory.affection + 1, 100),
+                   affection = {cap_expression},
                    interactions = user_memory.interactions + 1,
                    updated_at = CURRENT_TIMESTAMP""",
             (user_id, summary[:600], min(affection + 1, 100)),
@@ -111,8 +179,85 @@ def save_user_state(user_id: str, summary: str, affection: int) -> None:
 
 
 def forget_user_state(user_id: str) -> None:
-    with sqlite3.connect(MEMORY_DB_PATH, timeout=10) as connection:
+    with open_database() as connection:
+        if DATABASE_URL:
+            connection.execute("DELETE FROM reminders WHERE user_id = %s", (user_id,))
+            connection.execute("DELETE FROM user_notes WHERE user_id = %s", (user_id,))
+            connection.execute("DELETE FROM user_memory WHERE user_id = %s", (user_id,))
+            return
         connection.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM user_notes WHERE user_id = ?", (user_id,))
+        connection.execute("DELETE FROM reminders WHERE user_id = ?", (user_id,))
+
+
+TAIPEI_TZ = timezone(timedelta(hours=8))
+
+
+def handle_personal_command(user_id: str, text: str) -> str | None:
+    """Handle deterministic notes and reminder commands before sending text to the AI."""
+    command = text.strip()
+    with open_database() as connection:
+        if not DATABASE_URL:
+            connection.row_factory = sqlite3.Row
+        if command.startswith(("記事新增 ", "記事 新增 ", "記事 ")) and not command.startswith(("記事列表", "記事 列表", "記事刪除", "記事 刪除")):
+            content = re.sub(r"^記事(?:新增| 新增)?\s*", "", command).strip()
+            if not content:
+                return "記事內容是空的喔。用法：記事 <內容>"
+            connection.execute("INSERT INTO user_notes(user_id, content) VALUES (?, ?)", (user_id, content[:1000]))
+            return "記下來啦！傳「記事列表」可以查看，傳「記事刪除 編號」可以刪除。"
+        if command in {"記事", "記事列表", "記事 列表"}:
+            rows = connection.execute("SELECT id, content FROM user_notes WHERE user_id=? ORDER BY id DESC LIMIT 30", (user_id,)).fetchall()
+            return "你的記事：\n" + "\n".join(f"{(r['id'] if DATABASE_URL else r[0])}. {(r['content'] if DATABASE_URL else r[1])}" for r in rows) if rows else "記事本還空空的。傳「記事 <內容>」就能記下來。"
+        match = re.fullmatch(r"記事(?:刪除| 刪除)\s+(\d+)", command)
+        if match:
+            result = connection.execute("DELETE FROM user_notes WHERE id=? AND user_id=?", (int(match.group(1)), user_id))
+            return "記事刪除完成。" if result.rowcount else "找不到這筆記事，先傳「記事列表」看看編號吧。"
+        match = re.fullmatch(r"提醒\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})\s+(.+)", command)
+        if match:
+            year, month, day, hour, minute = map(int, match.groups()[:5])
+            content = match.group(6).strip()
+            try:
+                due = datetime(year, month, day, hour, minute, tzinfo=TAIPEI_TZ)
+            except ValueError:
+                return "日期時間不太對喔。請用：提醒 2026-11-05 09:30 記得帶傘"
+            if due <= datetime.now(TAIPEI_TZ):
+                return "提醒時間要設在未來喔，格式：提醒 2026-11-05 09:30 記得帶傘（UTC+8）"
+            connection.execute("INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)", (user_id, content[:1000], due if DATABASE_URL else due.isoformat()))
+            return f"好，{due:%Y/%m/%d %H:%M}（UTC+8）提醒你：{content}"
+        if command in {"提醒列表", "提醒 列表"}:
+            rows = connection.execute("SELECT id, content, remind_at FROM reminders WHERE user_id=? AND status='pending' ORDER BY remind_at LIMIT 30", (user_id,)).fetchall()
+            return "待辦提醒：\n" + "\n".join(f"{(r['id'] if DATABASE_URL else r[0])}. {(r['remind_at'] if DATABASE_URL else datetime.fromisoformat(r[2])).astimezone(TAIPEI_TZ):%Y/%m/%d %H:%M}｜{(r['content'] if DATABASE_URL else r[1])}" for r in rows) if rows else "目前沒有待辦提醒。用「提醒 YYYY-MM-DD HH:MM 內容」新增（UTC+8）。"
+        match = re.fullmatch(r"提醒(?:取消| 取消)\s+(\d+)", command)
+        if match:
+            result = connection.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
+            return "提醒取消啦。" if result.rowcount else "找不到這筆待辦提醒，傳「提醒列表」查看編號吧。"
+    return None
+
+
+def dispatch_due_reminders() -> int:
+    """Deliver all due reminders; overdue reminders are caught up on the next poll."""
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        return 0
+    now_dt = datetime.now(TAIPEI_TZ)
+    now = now_dt if DATABASE_URL else now_dt.isoformat()
+    sent = 0
+    with open_database() as connection:
+        rows = connection.execute("SELECT id, user_id, content, remind_at FROM reminders WHERE status='pending' AND remind_at<=? ORDER BY remind_at LIMIT 100", (now,)).fetchall()
+        for row in rows:
+            reminder_id, user_id, content, remind_at = ((row["id"], row["user_id"], row["content"], row["remind_at"]) if DATABASE_URL else row)
+            due = (remind_at if isinstance(remind_at, datetime) else datetime.fromisoformat(remind_at)).astimezone(TAIPEI_TZ)
+            text = f"⏰ 提醒時間到囉（{due:%Y/%m/%d %H:%M}，UTC+8）：\n{content}"
+            try:
+                response = requests.post("https://api.line.me/v2/bot/message/push", headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}", "Content-Type": "application/json"}, json={"to": user_id, "messages": [{"type": "text", "text": text}]}, timeout=10)
+            except requests.RequestException as error:
+                logger.warning("Reminder push failed: type=%s", type(error).__name__)
+                continue
+            if response.ok:
+                connection.execute("UPDATE reminders SET status='sent' WHERE id=? AND status='pending'", (reminder_id,))
+                sent += 1
+            else:
+                logger.error("Reminder push failed with HTTP %s", response.status_code)
+    return sent
 
 
 def update_memory_summary(
@@ -228,10 +373,19 @@ def verify_signature(body: bytes, signature: str) -> bool:
 
 
 def create_reply(user_message: str, user_id: str | None = None) -> str:
+    if user_id:
+        try:
+            command_reply = handle_personal_command(user_id, user_message)
+            if command_reply is not None:
+                return command_reply
+        except Exception as error:
+            logger.warning("Could not process personal command: type=%s", type(error).__name__)
+            return "記事本暫時打烊一下，等會兒再試試吧。"
+
     if user_id and user_message.strip() in {"忘記我", "清除記憶", "重置記憶"}:
         try:
             forget_user_state(user_id)
-        except sqlite3.Error as error:
+        except Exception as error:
             logger.warning("Could not clear user memory: type=%s", type(error).__name__)
             return "哎呀，記憶暫時沒清乾淨，等等再喊我一次「忘記我」吧。"
         return "好呀，關於你的長期記憶和好感度我都清空啦。下次見面，就當重新認識！"
@@ -241,7 +395,7 @@ def create_reply(user_message: str, user_id: str | None = None) -> str:
 
     try:
         memory, affection, _ = get_user_state(user_id) if user_id else ("", 0, 0)
-    except sqlite3.Error as error:
+    except Exception as error:
         logger.warning("Could not read user memory: type=%s", type(error).__name__)
         memory, affection, interactions = "", 0, 0
 
@@ -335,7 +489,8 @@ def process_events(events: list[dict[str, Any]]) -> None:
                 logger.info("LINE reply sent successfully")
                 source = event.get("source") or {}
                 if (source.get("userId") and GEMINI_API_KEY
-                        and message.get("text", "").strip() not in {"忘記我", "清除記憶", "重置記憶"}):
+                        and message.get("text", "").strip() not in {"忘記我", "清除記憶", "重置記憶"}
+                        and not message.get("text", "").strip().startswith(("記事", "提醒"))):
                     record_interaction(source["userId"], message.get("text", ""), reply_text)
             else:
                 # Do not log response bodies; they may contain user or request data.
@@ -406,6 +561,17 @@ def proactive_push(
             time.sleep(0.2)
 
     return {"status": "sent", "messages": len(messages), "batches": len(batches)}
+
+
+@app.post("/reminders/dispatch")
+def reminders_dispatch(authorization: str | None = Header(default=None)):
+    """Authenticated scheduler endpoint for UTC+8 reminders, including overdue catch-up."""
+    if len(PUSH_API_KEY) < 32:
+        raise HTTPException(status_code=503, detail="Reminder scheduler is not configured")
+    provided_key = authorization.removeprefix("Bearer ") if authorization and authorization.startswith("Bearer ") else ""
+    if not hmac.compare_digest(provided_key, PUSH_API_KEY):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"status": "ok", "sent": dispatch_due_reminders(), "timezone": "UTC+08:00"}
 
 
 @app.post("/callback")

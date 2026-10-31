@@ -1,0 +1,54 @@
+name: Dispatch LINE reminders
+
+on:
+  schedule:
+    # Poll every five minutes. GitHub cron is UTC; reminder dates are stored in UTC+8.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: line-reminder-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch due and overdue reminders
+        env:
+          PUSH_API_KEY: ${{ secrets.PUSH_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          key = os.environ.get("PUSH_API_KEY", "")
+          if len(key) < 32:
+              print("Configure the PUSH_API_KEY repository secret.")
+              sys.exit(1)
+
+          request = urllib.request.Request(
+              "https://line-bot-webhook-thi0.onrender.com/reminders/dispatch",
+              data=b"{}",
+              headers={
+                  "Authorization": f"Bearer {key}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=180) as response:
+                  result = json.loads(response.read().decode("utf-8"))
+                  print(f"Reminder dispatch completed: {result}")
+          except urllib.error.HTTPError as error:
+              print(f"Reminder dispatch failed with HTTP {error.code}.")
+              print(error.read().decode("utf-8"))
+              sys.exit(1)
+          PY
