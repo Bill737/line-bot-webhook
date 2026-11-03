@@ -287,6 +287,26 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 return calendar_month_text(year, month)
             except (ValueError, calendar.IllegalMonthError):
                 return "月份格式要像「日曆 2026-11」喔。"
+        # Near-term reminders: accept either "提醒我 5 分鐘後 喝水" or
+        # "5 分鐘後提醒我喝水". Store a real timestamp so the normal dispatcher
+        # can deliver it even if its next poll arrives a little late.
+        minute_match = re.fullmatch(
+            r"(?:提醒我\s*(\d{1,4})\s*分鐘後\s*|(?:提醒我)?\s*(\d{1,4})\s*分鐘後\s*提醒我?\s*)(.+)",
+            command,
+        )
+        if minute_match:
+            minutes = int(minute_match.group(1) or minute_match.group(2))
+            content = minute_match.group(3).strip()
+            if not 1 <= minutes <= 10080 or not content:
+                return "幾分鐘後提醒的範圍是 1 到 10080 分鐘，後面也請寫提醒內容。例：提醒我 5 分鐘後 喝水。"
+            due = datetime.now(TAIPEI_TZ) + timedelta(minutes=minutes)
+            connection.execute(
+                "INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)",
+                (user_id, content[:1000], due if DATABASE_URL else due.isoformat()),
+            )
+            return f"收到，{minutes} 分鐘後（約 {due:%H:%M}，UTC+8）提醒你：{content}。排程通常每 5 分鐘檢查一次，可能稍晚送達。"
+        if command.startswith(("幾分鐘後提醒", "提醒我幾分鐘後", "提醒幾分鐘後")):
+            return "可以提醒你喔，告訴我幾分鐘和提醒內容吧，例如：「提醒我 5 分鐘後 喝水」。"
         # Accept both the documented absolute date format and common Chinese
         # relative dates so a natural reminder request is not silently sent to AI.
         match = re.fullmatch(r"提醒(?:我)?\s+(?:(\d{4})[-/](\d{1,2})[-/](\d{1,2})|(今天|明天|後天|后天))\s*(?:(\d{1,2}):(\d{2})|(早上|上午|中午|下午|晚上)\s*(\d{1,2})(?:點|点)(?:(\d{1,2})分?)?)\s+(.+)", command)
