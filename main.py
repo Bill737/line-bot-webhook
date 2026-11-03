@@ -279,12 +279,42 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
         if command in {"日期", "今天日期", "今天幾號", "星期幾"}:
             today = datetime.now(TAIPEI_TZ)
             weekdays = "一二三四五六日"
-            return f"今天是 {today:%Y/%m/%d}，星期{weekdays[today.weekday()]}（台灣時間）。"
+            start = today.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+            rows = connection.execute(
+                "SELECT content, remind_at FROM reminders WHERE user_id=? AND status='pending' AND remind_at>=? AND remind_at<? ORDER BY remind_at",
+                (user_id, start if DATABASE_URL else start.isoformat(), end if DATABASE_URL else end.isoformat()),
+            ).fetchall()
+            date_text = f"今天是 {today:%Y/%m/%d}，星期{weekdays[today.weekday()]}（台灣時間）。"
+            if rows:
+                items = []
+                for row in rows:
+                    content, remind_at = (row["content"], row["remind_at"]) if DATABASE_URL else (row[0], row[1])
+                    due = remind_at if isinstance(remind_at, datetime) else datetime.fromisoformat(remind_at)
+                    items.append(f"{due.astimezone(TAIPEI_TZ):%H:%M} {content}")
+                date_text += "\n今天的提醒：\n" + "\n".join(items)
+            else:
+                date_text += "\n今天目前沒有待提醒事項。"
+            return date_text
         calendar_match = re.fullmatch(r"(?:日曆|月曆|行事曆)\s+(\d{4})[-/](\d{1,2})", command)
         if calendar_match:
             year, month = map(int, calendar_match.groups())
             try:
-                return calendar_month_text(year, month)
+                month_start = datetime(year, month, 1, tzinfo=TAIPEI_TZ)
+                next_month = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=TAIPEI_TZ)
+                rows = connection.execute(
+                    "SELECT content, remind_at FROM reminders WHERE user_id=? AND status='pending' AND remind_at>=? AND remind_at<? ORDER BY remind_at LIMIT 100",
+                    (user_id, month_start if DATABASE_URL else month_start.isoformat(), next_month if DATABASE_URL else next_month.isoformat()),
+                ).fetchall()
+                items = []
+                for row in rows:
+                    content, remind_at = (row["content"], row["remind_at"]) if DATABASE_URL else (row[0], row[1])
+                    due = remind_at if isinstance(remind_at, datetime) else datetime.fromisoformat(remind_at)
+                    due = due.astimezone(TAIPEI_TZ)
+                    items.append(f"{due:%m/%d %H:%M}｜{content}")
+                result = calendar_month_text(year, month)
+                result += "\n\n本月提醒：\n" + ("\n".join(items) if items else "目前沒有待提醒事項。")
+                return result
             except (ValueError, calendar.IllegalMonthError):
                 return "月份格式要像「日曆 2026-11」喔。"
         # Near-term reminders: accept either "提醒我 5 分鐘後 喝水" or
@@ -309,6 +339,22 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             return "可以提醒你喔，告訴我幾分鐘和提醒內容吧，例如：「提醒我 5 分鐘後 喝水」。"
         # Accept both the documented absolute date format and common Chinese
         # relative dates so a natural reminder request is not silently sent to AI.
+        command = re.sub(
+            r"(?<!\d)(\d{4})年(\d{1,2})月(\d{1,2})日",
+            r"\1-\2-\3",
+            command,
+        )
+        short_date = re.fullmatch(r"提醒(?:我)?\s*(\d{1,2})月(\d{1,2})日\s+(.+)", command)
+        if short_date:
+            month, day = int(short_date.group(1)), int(short_date.group(2))
+            year = datetime.now(TAIPEI_TZ).year
+            try:
+                candidate = datetime(year, month, day, tzinfo=TAIPEI_TZ)
+                if candidate.date() < datetime.now(TAIPEI_TZ).date():
+                    candidate = candidate.replace(year=year + 1)
+                command = f"提醒 {candidate:%Y-%m-%d} {short_date.group(3)}"
+            except ValueError:
+                return "日期不太對喔。可以傳「提醒 2026-11-05 09:30 記得帶傘」。"
         match = re.fullmatch(r"提醒(?:我)?\s+(?:(\d{4})[-/](\d{1,2})[-/](\d{1,2})|(今天|明天|後天|后天))\s*(?:(\d{1,2}):(\d{2})|(早上|上午|中午|下午|晚上)\s*(\d{1,2})(?:點|点)(?:(\d{1,2})分?)?)\s+(.+)", command)
         if match:
             year, month, day, relative, hour, minute, meridiem, cn_hour, cn_minute, content = match.groups()
@@ -345,7 +391,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             result = connection.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
             return "提醒取消啦。" if result.rowcount else "找不到這筆待辦提醒，傳「提醒列表」查看編號吧。"
         if command.startswith("提醒"):
-            return "提醒格式可以用：\n・提醒 2026-11-05 09:30 記得帶傘\n・提醒我 明天 下午 3 點 開會\n・提醒列表\n時間以台灣時間（UTC+8）計算。"
+            return "提醒格式可以用：\n・提醒我 5 分鐘後 喝水\n・提醒 2026-11-05 09:30 記得帶傘\n・提醒我 11月5日 09:30 記得帶傘\n・提醒我 明天 下午 3 點 開會\n・提醒列表\n・日曆 2026-11 也會列出本月提醒。\n時間以台灣時間（UTC+8）計算。"
     return None
 
 
@@ -633,6 +679,8 @@ def health_check():
         "user_memory_enabled": True,
         "seven_day_conversation_memory_enabled": True,
         "taipei_calendar_enabled": True,
+        "calendar_reminders_enabled": True,
+        "minute_reminders_enabled": True,
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
