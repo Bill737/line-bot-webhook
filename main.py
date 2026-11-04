@@ -214,7 +214,7 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 
 WEATHER_TRIGGER = re.compile(r"天氣|氣溫|溫度|下雨|降雨|帶傘|熱不熱|冷不冷|weather|temperature|rain", re.I)
 WEATHER_CITY_ALIASES = {
-    "台灣": "Taipei", "臺灣": "Taipei",
+    "台灣": "Kinmen", "臺灣": "Kinmen",
     "臺北市": "Taipei", "台北市": "Taipei", "臺北": "Taipei", "台北": "Taipei",
     "新北市": "New Taipei City", "新北": "New Taipei City", "板橋": "Banqiao, New Taipei City",
     "基隆": "Keelung", "基隆市": "Keelung", "桃園": "Taoyuan", "桃園市": "Taoyuan",
@@ -253,7 +253,7 @@ def weather_location(text: str) -> str:
     candidate = re.sub(r"[\s,，。？！?!]+", " ", candidate).strip()
     if candidate and len(candidate) <= 60:
         return candidate
-    return "Taipei"
+    return "Kinmen"
 
 
 def weather_description(code: int | None) -> str:
