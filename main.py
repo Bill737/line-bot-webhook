@@ -634,6 +634,47 @@ def create_reply(
     return "抱歉，AI 服務暫時無法回答，請稍後再試。"
 
 
+def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int | str | None]:
+    """Download the LINE image, retrying transient failures during both headers and body."""
+    url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
+    for attempt in range(3):
+        image_response = None
+        try:
+            image_response = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"},
+                stream=True,
+                timeout=(5, 20),
+            )
+            if not image_response.ok:
+                status_code = image_response.status_code
+                logger.warning("LINE image download failed with HTTP %s", status_code)
+                if status_code in {408, 429, 500, 502, 503, 504} and attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                return None, None, status_code
+
+            mime_type = image_response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+            image_bytes = bytearray()
+            for chunk in image_response.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    image_bytes.extend(chunk)
+                    if len(image_bytes) > 20 * 1024 * 1024:
+                        return bytes(image_bytes), mime_type, "too_large"
+            return bytes(image_bytes), mime_type, None
+        except requests.RequestException as error:
+            if attempt < 2:
+                logger.warning("LINE image download network error; retry %s/2: type=%s", attempt + 1, type(error).__name__)
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            logger.warning("LINE image download failed after retries: type=%s", type(error).__name__)
+            return None, None, "network"
+        finally:
+            if image_response is not None:
+                image_response.close()
+    return None, None, "network"
+
+
 def process_events(events: list[dict[str, Any]]) -> None:
     if not LINE_CHANNEL_ACCESS_TOKEN:
         logger.error("LINE_CHANNEL_ACCESS_TOKEN is not configured")
@@ -653,39 +694,25 @@ def process_events(events: list[dict[str, Any]]) -> None:
             if not message_id:
                 reply_text = "我收到圖片了，但 LINE 沒附上圖片編號，暫時讀不到內容。請再傳一次吧。"
             else:
-                try:
-                    image_response = requests.get(
-                        f"https://api-data.line.me/v2/bot/message/{message_id}/content",
-                        headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"},
-                        stream=True,
-                        timeout=15,
-                    )
-                    if not image_response.ok:
-                        logger.warning("LINE image download failed with HTTP %s", image_response.status_code)
-                        image_response.close()
-                        reply_text = "圖片暫時讀取不到，可能已過期或 LINE 下載失敗，請再傳一次。"
+                image_bytes, mime_type, download_error = download_line_image(str(message_id))
+                if isinstance(download_error, int):
+                    if download_error in {401, 403}:
+                        reply_text = f"LINE 圖片下載被拒絕（HTTP {download_error}）。請確認 Render 的 LINE_CHANNEL_ACCESS_TOKEN 有效，且屬於這個 LINE 官方帳號。"
+                    elif download_error in {404, 410}:
+                        reply_text = f"LINE 找不到這張圖片（HTTP {download_error}），圖片可能已失效。請重新傳送原圖。"
                     else:
-                        mime_type = image_response.headers.get("Content-Type", "").split(";", 1)[0].lower()
-                        allowed_mime_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-                        max_image_bytes = 20 * 1024 * 1024
-                        image_bytes = bytearray()
-                        for chunk in image_response.iter_content(chunk_size=64 * 1024):
-                            if not chunk:
-                                continue
-                            image_bytes.extend(chunk)
-                            if len(image_bytes) > max_image_bytes:
-                                break
-                        image_response.close()
-                        if mime_type not in allowed_mime_types:
-                            reply_text = "我目前能看 JPEG、PNG、WebP 或 GIF 圖片；這張格式讀不到，請轉成上述格式再傳。"
-                        elif len(image_bytes) > max_image_bytes:
-                            reply_text = "這張圖片太大啦（上限 20 MB），請縮小後再傳給我。"
-                        else:
-                            image_part = types.Part.from_bytes(data=bytes(image_bytes), mime_type=mime_type)
-                            user_message = "[使用者傳送圖片，請依圖片內容回答；若未附問題，請先描述圖片重點。]"
-                except requests.RequestException as error:
-                    logger.warning("LINE image download failed: type=%s", type(error).__name__)
-                    reply_text = "圖片下載時出了點狀況，請稍後再傳一次吧。"
+                        reply_text = f"LINE 圖片下載失敗（HTTP {download_error}）。我已重試可恢復的錯誤，請稍後再傳一次。"
+                elif download_error == "network":
+                    reply_text = "LINE 圖片下載連線失敗（已重試 2 次）。請稍後重新傳圖；若持續發生，請檢查 Render 的 LINE_CHANNEL_ACCESS_TOKEN。"
+                elif download_error == "too_large":
+                    reply_text = "這張圖片太大啦（上限 20 MB），請縮小後再傳給我。"
+                elif mime_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
+                    reply_text = "LINE 傳來的圖片格式讀不到，請傳 JPEG、PNG、WebP 或 GIF 圖片。"
+                elif image_bytes:
+                    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+                    user_message = "[使用者傳送圖片，請依圖片內容回答；若未附問題，請先描述圖片重點。]"
+                else:
+                    reply_text = "LINE 下載到的圖片內容是空的，請重新傳送原圖。"
         if image_part is not None:
             reply_text = create_reply(user_message, source.get("userId"), image_part)
         elif message.get("type") == "text":
@@ -733,6 +760,7 @@ def health_check():
         "calendar_reminders_enabled": True,
         "minute_reminders_enabled": True,
         "image_understanding_enabled": bool(GEMINI_API_KEY and LINE_CHANNEL_ACCESS_TOKEN),
+        "line_image_download_retry_enabled": True,
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
