@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import time
@@ -53,6 +54,7 @@ HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
 - 回覆要精簡但有料：先直接回答，再補上理解問題所需的關鍵原因、背景或下一步；不要繞圈、重複結論或堆砌客套話。
 - 一般問題以約 2–5 句為主；複雜問題可用短段落或條列，完整保留重要條件、步驟與例外，不要為了短而漏掉關鍵資訊。使用者要求詳細時再展開。
 - 回覆要把問題答完整，不要為了精簡省略必要步驟或結論；長回答可分成多個訊息氣泡，並在完整句子或詞語處分段。
+- 不要自行輸出顏文字；系統會在傳送一則 LINE 貼圖或加上一個顏文字之間擇一，避免兩者一起出現。
 - 依問題調整語氣：日常聊天俏皮靈巧，知識與操作問題清楚可靠；自然點綴胡桃的幽默，不要每句硬塞口頭禪、詩句或往生堂推銷。
 - 對《原神》問題可依上述背景及已知設定回答；不要捏造官方劇情、角色關係或未確認細節，不確定時坦白說不確定。
 - 一般知識問題仍要先給正確、清楚的答案，再自然融入胡桃口吻；不要為了扮演角色而犧牲準確性。
@@ -519,6 +521,27 @@ def reply_bubbles(text: str, max_bubbles: int = 5) -> list[str]:
     return bubbles
 
 
+def expressive_reply_messages(text: str) -> list[dict[str, str]]:
+    """Add either one approved LINE sticker or one kaomoji, never both."""
+    chunks = reply_bubbles(text)
+    if not chunks:
+        chunks = [""]
+
+    # Keep a warm, plain-text tone for serious subjects.
+    if re.search(r"自殺|自傷|輕生|喪親|過世|癌症|急診|葬禮|性侵|霸凌", text):
+        return [{"type": "text", "text": chunk} for chunk in chunks]
+
+    if len(chunks) < 5 and random.random() < 0.35:
+        messages = [{"type": "text", "text": chunk} for chunk in chunks]
+        messages.append({"type": "sticker", "packageId": "446", "stickerId": str(random.choice((1988, 1989, 1990, 1991, 1992)))})
+        return messages
+
+    kaomoji = random.choice(("( ´ ▽ ` )ﾉ", "(｡•̀ᴗ-)✧", "( •̀ ω •́ )✧", "(^_−)☆"))
+    if len(chunks[-1]) + len(kaomoji) + 1 <= 5000:
+        chunks[-1] += " " + kaomoji
+    return [{"type": "text", "text": chunk} for chunk in chunks]
+
+
 class PushRequest(BaseModel):
     to: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=20000)
@@ -683,7 +706,7 @@ def process_events(events: list[dict[str, Any]]) -> None:
     for event in events:
         message = event.get("message") or {}
         reply_token = event.get("replyToken")
-        if event.get("type") != "message" or message.get("type") not in {"text", "image"} or not reply_token:
+        if event.get("type") != "message" or message.get("type") not in {"text", "image", "sticker"} or not reply_token:
             continue
 
         source = event.get("source") or {}
@@ -713,11 +736,30 @@ def process_events(events: list[dict[str, Any]]) -> None:
                     user_message = "[使用者傳送圖片，請依圖片內容回答；若未附問題，請先描述圖片重點。]"
                 else:
                     reply_text = "LINE 下載到的圖片內容是空的，請重新傳送原圖。"
+        elif message.get("type") == "sticker":
+            keywords = message.get("keywords") or []
+            keywords = [str(keyword)[:80] for keyword in keywords[:15] if keyword]
+            sticker_text = str(message.get("text") or "")[:100]
+            sticker_kind = str(message.get("stickerResourceType") or "未知")[:40]
+            package_id = str(message.get("packageId") or "未知")[:40]
+            sticker_id = str(message.get("stickerId") or "未知")[:40]
+            if keywords or sticker_text:
+                user_message = (
+                    "[使用者傳送 LINE 貼圖。請只根據可用線索理解語氣，不要假裝看見貼圖圖像。"
+                    f"貼圖文字：{sticker_text or '無'}；貼圖關鍵字：{'、'.join(keywords) or '未提供'}；"
+                    f"資源類型：{sticker_kind}。packageId={package_id}、stickerId={sticker_id} 僅供辨識，不可單憑編號猜圖意。]"
+                )
+            else:
+                user_message = (
+                    "[使用者傳送 LINE 貼圖，但 LINE 未提供貼圖圖片或文字線索。"
+                    f"資源類型：{sticker_kind}；packageId={package_id}；stickerId={sticker_id}。"
+                    "請自然回應收到貼圖，不能只憑編號猜貼圖畫面或意思。]"
+                )
         if image_part is not None:
             reply_text = create_reply(user_message, source.get("userId"), image_part)
-        elif message.get("type") == "text":
+        elif message.get("type") in {"text", "sticker"}:
             reply_text = create_reply(user_message, source.get("userId"))
-        reply_messages = reply_bubbles(reply_text)
+        reply_messages = expressive_reply_messages(reply_text)
         try:
             response = requests.post(
                 "https://api.line.me/v2/bot/message/reply",
@@ -727,9 +769,7 @@ def process_events(events: list[dict[str, Any]]) -> None:
                 },
                 json={
                     "replyToken": reply_token,
-                    "messages": [
-                        {"type": "text", "text": chunk} for chunk in reply_messages
-                    ],
+                    "messages": reply_messages,
                 },
                 timeout=10,
             )
@@ -761,6 +801,8 @@ def health_check():
         "minute_reminders_enabled": True,
         "image_understanding_enabled": bool(GEMINI_API_KEY and LINE_CHANNEL_ACCESS_TOKEN),
         "line_image_download_retry_enabled": True,
+        "sticker_recognition_enabled": True,
+        "sticker_or_kaomoji_enabled": True,
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
