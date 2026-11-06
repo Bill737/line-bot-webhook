@@ -2,8 +2,8 @@ name: Daily Hu Tao LINE message
 
 on:
   schedule:
-    # 09:00 Asia/Taipei (UTC+8).
-    - cron: "0 1 * * *"
+    # 08:00 Asia/Taipei (UTC+8). GitHub Actions cron is UTC.
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
