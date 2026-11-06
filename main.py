@@ -551,7 +551,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             return "待辦提醒：\n" + "\n".join(f"{(r['id'] if DATABASE_URL else r[0])}. {(r['remind_at'] if DATABASE_URL else datetime.fromisoformat(r[2])).astimezone(TAIPEI_TZ):%Y/%m/%d %H:%M}｜{(r['content'] if DATABASE_URL else r[1])}" for r in rows) if rows else "目前沒有待辦提醒。用「提醒 YYYY-MM-DD HH:MM 內容」新增（UTC+8）。"
         match = re.fullmatch(r"提醒(?:取消| 取消)\s+(\d+)", command)
         if match:
-            result = connection.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
+            result = connection.execute("DELETE FROM reminders WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
             return "提醒取消啦。" if result.rowcount else "找不到這筆待辦提醒，傳「提醒列表」查看編號吧。"
         if command.startswith("提醒"):
             return "提醒格式可以用：\n・提醒我 5 分鐘後 喝水\n・提醒 2026-11-05 09:30 記得帶傘\n・提醒我 11月5日 09:30 記得帶傘\n・提醒我 明天 下午 3 點 開會\n・提醒列表\n・日曆 2026-11 也會列出本月提醒。\n時間以台灣時間（UTC+8）計算。"
@@ -559,13 +559,20 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
 
 
 def dispatch_due_reminders() -> int:
-    """Deliver all due reminders; overdue reminders are caught up on the next poll."""
-    if not LINE_CHANNEL_ACCESS_TOKEN:
-        return 0
+    """Deliver due reminders and clean delivered, cancelled, or stale rows."""
     now_dt = datetime.now(TAIPEI_TZ)
     now = now_dt if DATABASE_URL else now_dt.isoformat()
+    stale_before_dt = now_dt - timedelta(hours=24)
+    stale_before = stale_before_dt if DATABASE_URL else stale_before_dt.isoformat()
     sent = 0
     with open_database() as connection:
+        # Keep a one-day grace period for delayed polling, then discard obsolete reminders.
+        connection.execute(
+            "DELETE FROM reminders WHERE status IN ('sent', 'cancelled') OR (status='pending' AND remind_at<?)",
+            (stale_before,),
+        )
+        if not LINE_CHANNEL_ACCESS_TOKEN:
+            return 0
         rows = connection.execute("SELECT id, user_id, content, remind_at FROM reminders WHERE status='pending' AND remind_at<=? ORDER BY remind_at LIMIT 100", (now,)).fetchall()
         for row in rows:
             reminder_id, user_id, content, remind_at = ((row["id"], row["user_id"], row["content"], row["remind_at"]) if DATABASE_URL else row)
@@ -577,7 +584,7 @@ def dispatch_due_reminders() -> int:
                 logger.warning("Reminder push failed: type=%s", type(error).__name__)
                 continue
             if response.ok:
-                connection.execute("UPDATE reminders SET status='sent' WHERE id=? AND status='pending'", (reminder_id,))
+                connection.execute("DELETE FROM reminders WHERE id=? AND status='pending'", (reminder_id,))
                 sent += 1
             else:
                 logger.error("Reminder push failed with HTTP %s", response.status_code)
@@ -765,6 +772,14 @@ def create_reply(
     for model_index, model in enumerate(models):
         for attempt in range(2):
             try:
+                reply_time = datetime.now(TAIPEI_TZ)
+                weekdays = "一二三四五六日"
+                time_context = (
+                    f"【回答前取得的台灣現在時間】{reply_time:%Y-%m-%d %H:%M:%S}，"
+                    f"星期{weekdays[reply_time.weekday()]}，Asia/Taipei（UTC+8）。"
+                    "回答任何日期、星期、現在／今天／明天／稍後等時間問題時，必須以這個時間重新計算；"
+                    "不可沿用聊天記錄中的舊時間，也不可把 UTC 當成台灣時間。若使用者的時間描述有歧義，先確認再建立提醒。"
+                )
                 current_user_prompt = user_message
                 if weather_context:
                     current_user_prompt += "\n\n" + weather_context
@@ -783,7 +798,7 @@ def create_reply(
                     config=types.GenerateContentConfig(
                         system_instruction=(
                             HU_TAO_SYSTEM_INSTRUCTION
-                            + f"\n\n【現在的台灣日期與時間】\n{datetime.now(TAIPEI_TZ):%Y-%m-%d %H:%M}，UTC+8；今天是星期{'一二三四五六日'[datetime.now(TAIPEI_TZ).weekday()]}。日期計算請以此為準。"
+                            + "\n\n" + time_context
                             + "\n\n【這位使用者的熟悉程度】\n"
                             + affection_level(affection)
                             + (f"\n【你記得的個人資訊】\n{memory}\n請自然運用，不要照本宣科。"
