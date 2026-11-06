@@ -439,6 +439,10 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
         if match:
             result = connection.execute("DELETE FROM user_notes WHERE id=? AND user_id=?", (int(match.group(1)), user_id))
             return "記事刪除完成。" if result.rowcount else "找不到這筆記事，先傳「記事列表」看看編號吧。"
+        if re.fullmatch(r"(?:請問)?(?:現在)?(?:台灣)?(?:現在)?(?:時間|幾點)(?:是幾點)?[？?。！!]*", command):
+            now = datetime.now(TAIPEI_TZ)
+            weekdays = "一二三四五六日"
+            return f"現在是台灣時間 {now:%Y/%m/%d %H:%M:%S}，星期{weekdays[now.weekday()]}（UTC+8）。"
         if command in {"日期", "今天日期", "今天幾號", "星期幾"}:
             today = datetime.now(TAIPEI_TZ)
             weekdays = "一二三四五六日"
@@ -984,8 +988,10 @@ def health_check():
         "user_memory_enabled": True,
         "seven_day_conversation_memory_enabled": True,
         "taipei_calendar_enabled": True,
+        "taiwan_time_awareness_enabled": True,
         "calendar_reminders_enabled": True,
         "minute_reminders_enabled": True,
+        "reminder_cleanup_enabled": True,
         "image_understanding_enabled": bool(GEMINI_API_KEY and LINE_CHANNEL_ACCESS_TOKEN),
         "line_image_download_retry_enabled": True,
         "sticker_recognition_enabled": True,
