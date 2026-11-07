@@ -491,29 +491,49 @@ def compact_expired_conversation(user_id: str, limit: int = 100) -> int:
 
 def purge_expired_reminders(user_id: str | None = None) -> int:
     """Delete pending reminders that have been overdue for more than ten minutes."""
-    cutoff_dt = datetime.now(TAIPEI_TZ) - timedelta(minutes=10)
-    cutoff = cutoff_dt if DATABASE_URL else cutoff_dt.isoformat()
+    cutoff_utc = (datetime.now(TAIPEI_TZ) - timedelta(minutes=10)).astimezone(timezone.utc)
     with open_database() as connection:
         if user_id is None:
-            result = connection.execute(
-                "DELETE FROM reminders WHERE status IN ('sent', 'cancelled') "
-                "OR (status='pending' AND remind_at<=?)",
-                (cutoff,),
-            )
+            connection.execute("DELETE FROM reminders WHERE status IN ('sent', 'cancelled')")
+            rows = connection.execute(
+                "SELECT id, remind_at FROM reminders WHERE status='pending'"
+            ).fetchall()
         else:
-            result = connection.execute(
-                "DELETE FROM reminders WHERE user_id=? AND "
-                "(status IN ('sent', 'cancelled') OR (status='pending' AND remind_at<=?))",
-                (user_id, cutoff),
+            connection.execute(
+                "DELETE FROM reminders WHERE user_id=? AND status IN ('sent', 'cancelled')",
+                (user_id,),
             )
-        return result.rowcount
+            rows = connection.execute(
+                "SELECT id, remind_at FROM reminders WHERE user_id=? AND status='pending'",
+                (user_id,),
+            ).fetchall()
+
+        expired_ids = []
+        for row in rows:
+            reminder_id, remind_at = ((row["id"], row["remind_at"]) if DATABASE_URL else row)
+            try:
+                due = remind_at if isinstance(remind_at, datetime) else datetime.fromisoformat(remind_at)
+            except (TypeError, ValueError):
+                logger.warning("Skipping reminder with an invalid due timestamp")
+                continue
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=TAIPEI_TZ)
+            if due.astimezone(timezone.utc) <= cutoff_utc:
+                expired_ids.append(reminder_id)
+        if expired_ids:
+            placeholders = ",".join("?" for _ in expired_ids)
+            connection.execute(
+                f"DELETE FROM reminders WHERE status='pending' AND id IN ({placeholders})",
+                tuple(expired_ids),
+            )
+        return len(expired_ids)
 
 
 def handle_personal_command(user_id: str, text: str) -> str | None:
     """Handle deterministic notes and reminder commands before sending text to the AI."""
     command = text.strip()
     # Also prune this user's stale reminders on every incoming chat, not only list requests.
-    purge_expired_reminders(user_id)
+    expired_reminders_removed = purge_expired_reminders(user_id)
     if command in {"記憶", "記憶框架", "我的記憶", "記憶摘要", "最近聊天", "對話記錄"}:
         compact_expired_conversation(user_id)
         cutoff = datetime.now(TAIPEI_TZ) - timedelta(days=7)
@@ -693,8 +713,9 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             return f"好，{due:%Y/%m/%d} 星期{'一二三四五六日'[due.weekday()]} {due:%H:%M}（台灣時間 UTC+8）提醒你：{content}"
         if command in {"提醒列表", "提醒 列表"}:
             rows = connection.execute("SELECT id, content, remind_at FROM reminders WHERE user_id=? AND status='pending' ORDER BY remind_at LIMIT 30", (user_id,)).fetchall()
+            removed_note = f"已清除 {expired_reminders_removed} 筆超過十分鐘的逾期提醒。\n" if expired_reminders_removed else ""
             if not rows:
-                return "目前沒有待辦提醒。用「提醒 YYYY-MM-DD HH:MM 內容」新增（台灣時間 UTC+8）。"
+                return removed_note + "目前沒有待辦提醒。用「提醒 YYYY-MM-DD HH:MM 內容」新增（台灣時間 UTC+8）。"
             items = []
             for row in rows:
                 reminder_id, content, remind_at = ((row["id"], row["content"], row["remind_at"])
@@ -703,7 +724,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 due = due.astimezone(TAIPEI_TZ)
                 weekday = "一二三四五六日"[due.weekday()]
                 items.append(f"{reminder_id}. {due:%Y/%m/%d} 星期{weekday} {due:%H:%M}｜{content}")
-            return "待辦提醒（台灣時間 Asia/Taipei，UTC+8）：\n" + "\n".join(items)
+            return removed_note + "待辦提醒（台灣時間 Asia/Taipei，UTC+8）：\n" + "\n".join(items)
         match = re.fullmatch(r"提醒(?:取消| 取消)\s+(\d+)", command)
         if match:
             result = connection.execute("DELETE FROM reminders WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
@@ -1153,6 +1174,7 @@ def health_check():
         "minute_reminders_enabled": True,
         "reminder_cleanup_enabled": True,
         "reminder_expiry_grace_minutes": 10,
+        "reminder_expiry_comparison": "UTC-normalized",
         "image_understanding_enabled": bool(GEMINI_API_KEY and LINE_CHANNEL_ACCESS_TOKEN),
         "line_image_download_retry_enabled": True,
         "sticker_recognition_enabled": True,
