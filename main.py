@@ -489,9 +489,31 @@ def compact_expired_conversation(user_id: str, limit: int = 100) -> int:
         return 0
 
 
+def purge_expired_reminders(user_id: str | None = None) -> int:
+    """Delete pending reminders that have been overdue for more than ten minutes."""
+    cutoff_dt = datetime.now(TAIPEI_TZ) - timedelta(minutes=10)
+    cutoff = cutoff_dt if DATABASE_URL else cutoff_dt.isoformat()
+    with open_database() as connection:
+        if user_id is None:
+            result = connection.execute(
+                "DELETE FROM reminders WHERE status IN ('sent', 'cancelled') "
+                "OR (status='pending' AND remind_at<=?)",
+                (cutoff,),
+            )
+        else:
+            result = connection.execute(
+                "DELETE FROM reminders WHERE user_id=? AND "
+                "(status IN ('sent', 'cancelled') OR (status='pending' AND remind_at<=?))",
+                (user_id, cutoff),
+            )
+        return result.rowcount
+
+
 def handle_personal_command(user_id: str, text: str) -> str | None:
     """Handle deterministic notes and reminder commands before sending text to the AI."""
     command = text.strip()
+    # Also prune this user's stale reminders on every incoming chat, not only list requests.
+    purge_expired_reminders(user_id)
     if command in {"記憶", "記憶框架", "我的記憶", "記憶摘要", "最近聊天", "對話記錄"}:
         compact_expired_conversation(user_id)
         cutoff = datetime.now(TAIPEI_TZ) - timedelta(days=7)
@@ -620,7 +642,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 "INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)",
                 (user_id, content[:1000], due if DATABASE_URL else due.isoformat()),
             )
-            return f"收到，{minutes} 分鐘後（約 {due:%H:%M}，UTC+8）提醒你：{content}。排程通常每 5 分鐘檢查一次，可能稍晚送達。"
+            return f"收到，{minutes} 分鐘後（約 {due:%H:%M}，台灣時間）提醒你：{content}。排程通常每 5 分鐘檢查；超過提醒時間 10 分鐘仍未送達就會刪除。"
         if command.startswith(("幾分鐘後提醒", "提醒我幾分鐘後", "提醒幾分鐘後")):
             return "可以提醒你喔，告訴我幾分鐘和提醒內容吧，例如：「提醒我 5 分鐘後 喝水」。"
         # Accept both the documented absolute date format and common Chinese
@@ -671,7 +693,17 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             return f"好，{due:%Y/%m/%d} 星期{'一二三四五六日'[due.weekday()]} {due:%H:%M}（台灣時間 UTC+8）提醒你：{content}"
         if command in {"提醒列表", "提醒 列表"}:
             rows = connection.execute("SELECT id, content, remind_at FROM reminders WHERE user_id=? AND status='pending' ORDER BY remind_at LIMIT 30", (user_id,)).fetchall()
-            return "待辦提醒：\n" + "\n".join(f"{(r['id'] if DATABASE_URL else r[0])}. {(r['remind_at'] if DATABASE_URL else datetime.fromisoformat(r[2])).astimezone(TAIPEI_TZ):%Y/%m/%d %H:%M}｜{(r['content'] if DATABASE_URL else r[1])}" for r in rows) if rows else "目前沒有待辦提醒。用「提醒 YYYY-MM-DD HH:MM 內容」新增（UTC+8）。"
+            if not rows:
+                return "目前沒有待辦提醒。用「提醒 YYYY-MM-DD HH:MM 內容」新增（台灣時間 UTC+8）。"
+            items = []
+            for row in rows:
+                reminder_id, content, remind_at = ((row["id"], row["content"], row["remind_at"])
+                                                   if DATABASE_URL else (row[0], row[1], row[2]))
+                due = remind_at if isinstance(remind_at, datetime) else datetime.fromisoformat(remind_at)
+                due = due.astimezone(TAIPEI_TZ)
+                weekday = "一二三四五六日"[due.weekday()]
+                items.append(f"{reminder_id}. {due:%Y/%m/%d} 星期{weekday} {due:%H:%M}｜{content}")
+            return "待辦提醒（台灣時間 Asia/Taipei，UTC+8）：\n" + "\n".join(items)
         match = re.fullmatch(r"提醒(?:取消| 取消)\s+(\d+)", command)
         if match:
             result = connection.execute("DELETE FROM reminders WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
@@ -682,17 +714,14 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
 
 
 def dispatch_due_reminders() -> int:
-    """Deliver due reminders and clean delivered, cancelled, or stale rows."""
+    """Deliver reminders within their ten-minute grace period and prune expired rows."""
     now_dt = datetime.now(TAIPEI_TZ)
     now = now_dt if DATABASE_URL else now_dt.isoformat()
-    stale_before_dt = now_dt - timedelta(hours=24)
-    stale_before = stale_before_dt if DATABASE_URL else stale_before_dt.isoformat()
+    purge_expired_reminders()
     sent = 0
     with open_database() as connection:
-        # Keep a one-day grace period for delayed polling, then discard obsolete reminders.
         connection.execute(
-            "DELETE FROM reminders WHERE status IN ('sent', 'cancelled') OR (status='pending' AND remind_at<?)",
-            (stale_before,),
+            "DELETE FROM reminders WHERE status IN ('sent', 'cancelled')",
         )
         if not LINE_CHANNEL_ACCESS_TOKEN:
             return 0
@@ -1123,6 +1152,7 @@ def health_check():
         "calendar_reminders_enabled": True,
         "minute_reminders_enabled": True,
         "reminder_cleanup_enabled": True,
+        "reminder_expiry_grace_minutes": 10,
         "image_understanding_enabled": bool(GEMINI_API_KEY and LINE_CHANNEL_ACCESS_TOKEN),
         "line_image_download_retry_enabled": True,
         "sticker_recognition_enabled": True,
