@@ -11,6 +11,7 @@ import time
 import calendar
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -210,7 +211,7 @@ def forget_user_state(user_id: str) -> None:
         connection.execute("DELETE FROM reminders WHERE user_id = ?", (user_id,))
 
 
-TAIPEI_TZ = timezone(timedelta(hours=8))
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 WEATHER_TRIGGER = re.compile(r"天氣|氣溫|溫度|下雨|降雨|帶傘|熱不熱|冷不冷|weather|temperature|rain", re.I)
 WEATHER_CITY_ALIASES = {
@@ -1100,9 +1101,15 @@ def process_events(events: list[dict[str, Any]]) -> None:
 
 @app.get("/")
 def health_check():
+    now_utc = datetime.now(timezone.utc)
+    now_taipei = now_utc.astimezone(TAIPEI_TZ)
     return {
         "status": "ok",
         "message": "LINE Bot Webhook Server is running",
+        "server_timezone": "Asia/Taipei",
+        "server_time_utc": now_utc.isoformat(timespec="seconds"),
+        "server_time_taipei": now_taipei.isoformat(timespec="seconds"),
+        "taipei_utc_offset_hours": now_taipei.utcoffset().total_seconds() / 3600,
         "ai_enabled": bool(GEMINI_API_KEY),
         "ai_provider": "gemini",
         "user_memory_enabled": True,
@@ -1125,6 +1132,19 @@ def health_check():
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
+    }
+
+
+@app.get("/time")
+def time_check():
+    """Expose the Render process clock in UTC and Taiwan time for verification."""
+    now_utc = datetime.now(timezone.utc)
+    now_taipei = now_utc.astimezone(TAIPEI_TZ)
+    return {
+        "timezone": "Asia/Taipei",
+        "utc": now_utc.isoformat(timespec="seconds"),
+        "taiwan": now_taipei.isoformat(timespec="seconds"),
+        "utc_offset_hours": now_taipei.utcoffset().total_seconds() / 3600,
     }
 
 
