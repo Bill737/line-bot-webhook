@@ -19,6 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
+from mutagen.mp3 import MP3
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
 from google import genai
@@ -929,19 +930,7 @@ def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
                 logger.warning("Fish Audio voice generation failed with HTTP %s", tts_response.status_code)
                 return None
             mp3_bytes = tts_response.content
-            duration_probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
-                 "default=noprint_wrappers=1:nokey=1", "pipe:0"],
-                input=mp3_bytes,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=20,
-                check=False,
-            )
-            if duration_probe.returncode != 0:
-                logger.warning("Could not determine Fish Audio clip duration")
-                return None
-            duration_ms = round(float(duration_probe.stdout.strip()) * 1000)
+            duration_ms = round(MP3(io.BytesIO(mp3_bytes)).info.length * 1000)
             mp3_output = mp3_bytes
         elif VOICE_REPLY_PROVIDER == "gemini":
             tts_response = requests.post(

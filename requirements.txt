@@ -3,5 +3,6 @@ uvicorn
 google-genai
 python-dotenv
 requests
+mutagen
 psycopg[binary]
 tzdata
