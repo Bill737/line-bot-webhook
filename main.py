@@ -38,8 +38,16 @@ PUSH_API_KEY = os.getenv("PUSH_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("apikey", "")
 GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 VOICE_REPLY_ENABLED = os.getenv("VOICE_REPLY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-VOICE_REPLY_MODEL = "gemini-2.5-flash-preview-tts"
+VOICE_REPLY_PROVIDER = os.getenv("VOICE_REPLY_PROVIDER", "fish").strip().lower()
+VOICE_REPLY_MODEL = (
+    os.getenv("FISH_AUDIO_MODEL", "s2.1-pro-free")
+    if os.getenv("VOICE_REPLY_PROVIDER", "fish").strip().lower() == "fish"
+    else os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts")
+)
 VOICE_REPLY_NAME = os.getenv("VOICE_REPLY_NAME", "Leda")
+GEMINI_TTS_VOICE_ID = os.getenv("GEMINI_TTS_VOICE_ID", "").strip()
+FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
+FISH_AUDIO_REFERENCE_ID = os.getenv("FISH_AUDIO_REFERENCE_ID", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://line-bot-webhook-thi0.onrender.com").rstrip("/")
 VOICE_CACHE_TTL_SECONDS = 15 * 60
 VOICE_AUDIO_CACHE: dict[str, tuple[bytes, int, float]] = {}
@@ -898,71 +906,113 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
 
 
 def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
-    """Create a short-lived MP3 in a youthful, lively Mandarin voice for LINE."""
-    if not VOICE_REPLY_ENABLED or not GEMINI_API_KEY or not text.strip() or len(text) > 6000:
+    """Create a short-lived MP3 with Fish Audio or Gemini TTS."""
+    provider_key = FISH_AUDIO_API_KEY if VOICE_REPLY_PROVIDER == "fish" else GEMINI_API_KEY
+    if not VOICE_REPLY_ENABLED or not provider_key or not text.strip() or len(text) > 6000:
         return None
     try:
-        tts_response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{VOICE_REPLY_MODEL}:generateContent",
-            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": [{
-                    "text": (
-                        "請把『朗讀內容』逐字用國語念出來。聲音自然、年輕、明亮活潑，語速輕快但咬字清楚，"
-                        "帶一點俏皮和親切感；不要模仿任何真人配音員或既有角色的原聲。\n"
-                        f"朗讀內容：\n{text}"
-                    )
-                }]}],
-                "generationConfig": {
-                    "responseModalities": ["AUDIO"],
-                    "speechConfig": {
-                        "languageCode": "cmn-CN",
-                        "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": VOICE_REPLY_NAME}},
+        if VOICE_REPLY_PROVIDER == "fish":
+            if not FISH_AUDIO_REFERENCE_ID:
+                logger.warning("Fish Audio voice reference ID is not configured")
+                return None
+            tts_response = requests.post(
+                "https://api.fish.audio/v1/tts",
+                headers={
+                    "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
+                    "Content-Type": "application/json",
+                    "model": VOICE_REPLY_MODEL,
+                },
+                json={"text": text, "reference_id": FISH_AUDIO_REFERENCE_ID, "format": "mp3"},
+                timeout=(10, 60),
+            )
+            if not tts_response.ok:
+                logger.warning("Fish Audio voice generation failed with HTTP %s", tts_response.status_code)
+                return None
+            mp3_bytes = tts_response.content
+            duration_probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+                 "default=noprint_wrappers=1:nokey=1", "pipe:0"],
+                input=mp3_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                check=False,
+            )
+            if duration_probe.returncode != 0:
+                logger.warning("Could not determine Fish Audio clip duration")
+                return None
+            duration_ms = round(float(duration_probe.stdout.strip()) * 1000)
+            mp3_output = mp3_bytes
+        elif VOICE_REPLY_PROVIDER == "gemini":
+            tts_response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{os.getenv('GEMINI_TTS_MODEL', 'gemini-3.8-flash-tts')}:generateContent",
+                headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+                json={
+                    "contents": [{"parts": [{
+                        "text": (
+                            "請把『朗讀內容』逐字用國語念出來。聲音自然、年輕、明亮活潑，語速輕快但咬字清楚，"
+                            "帶一點俏皮和親切感；保留所選聲線本身的音色，不要改變說話者身分。\n"
+                            f"朗讀內容：\n{text}"
+                        )
+                    }]}],
+                    "generationConfig": {
+                        "responseModalities": ["AUDIO"],
+                        "speechConfig": {
+                            "languageCode": "cmn-CN",
+                            "voiceConfig": (
+                                {"voice": GEMINI_TTS_VOICE_ID}
+                                if GEMINI_TTS_VOICE_ID
+                                else {"prebuiltVoiceConfig": {"voiceName": VOICE_REPLY_NAME}}
+                            ),
+                        },
                     },
                 },
-            },
-            timeout=(10, 60),
-        )
-        if not tts_response.ok:
-            logger.warning("Gemini voice generation failed with HTTP %s", tts_response.status_code)
-            return None
-        payload = tts_response.json()
-        audio_bytes = None
-        mime_type = ""
-        for candidate in payload.get("candidates", []):
-            for part in (candidate.get("content") or {}).get("parts", []):
-                inline = part.get("inlineData") or part.get("inline_data")
-                if inline and inline.get("data"):
-                    audio_bytes = base64.b64decode(inline["data"], validate=True)
-                    mime_type = str(inline.get("mimeType") or inline.get("mime_type") or "audio/pcm").lower()
+                timeout=(10, 60),
+            )
+            if not tts_response.ok:
+                logger.warning("Gemini voice generation failed with HTTP %s", tts_response.status_code)
+                return None
+            payload = tts_response.json()
+            audio_bytes = None
+            mime_type = ""
+            for candidate in payload.get("candidates", []):
+                for part in (candidate.get("content") or {}).get("parts", []):
+                    inline = part.get("inlineData") or part.get("inline_data")
+                    if inline and inline.get("data"):
+                        audio_bytes = base64.b64decode(inline["data"], validate=True)
+                        mime_type = str(inline.get("mimeType") or inline.get("mime_type") or "audio/pcm").lower()
+                        break
+                if audio_bytes:
                     break
-            if audio_bytes:
-                break
-        if not audio_bytes:
-            logger.warning("Gemini voice generation returned no audio")
-            return None
+            if not audio_bytes:
+                logger.warning("Gemini voice generation returned no audio")
+                return None
 
-        if "wav" in mime_type:
-            with wave.open(io.BytesIO(audio_bytes), "rb") as audio_wave:
-                duration_ms = round(audio_wave.getnframes() * 1000 / audio_wave.getframerate())
-            ffmpeg_input = ["-i", "pipe:0"]
+            if "wav" in mime_type:
+                with wave.open(io.BytesIO(audio_bytes), "rb") as audio_wave:
+                    duration_ms = round(audio_wave.getnframes() * 1000 / audio_wave.getframerate())
+                ffmpeg_input = ["-i", "pipe:0"]
+            else:
+                sample_rate_match = re.search(r"rate=(\d+)", mime_type)
+                sample_rate = int(sample_rate_match.group(1)) if sample_rate_match else 24000
+                duration_ms = round(len(audio_bytes) * 1000 / (sample_rate * 2))
+                ffmpeg_input = ["-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0"]
+
+            converted = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", *ffmpeg_input,
+                 "-vn", "-codec:a", "libmp3lame", "-b:a", "64k", "-f", "mp3", "pipe:1"],
+                input=audio_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=45,
+                check=False,
+            )
+            if converted.returncode != 0 or not converted.stdout:
+                logger.warning("Could not convert generated voice audio to MP3")
+                return None
+            mp3_output = converted.stdout
         else:
-            sample_rate_match = re.search(r"rate=(\d+)", mime_type)
-            sample_rate = int(sample_rate_match.group(1)) if sample_rate_match else 24000
-            duration_ms = round(len(audio_bytes) * 1000 / (sample_rate * 2))
-            ffmpeg_input = ["-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0"]
-
-        converted = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", *ffmpeg_input,
-             "-vn", "-codec:a", "libmp3lame", "-b:a", "64k", "-f", "mp3", "pipe:1"],
-            input=audio_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=45,
-            check=False,
-        )
-        if converted.returncode != 0 or not converted.stdout:
-            logger.warning("Could not convert generated voice audio to MP3")
+            logger.error("Unsupported voice reply provider configured")
             return None
         token = secrets.token_urlsafe(24)
         expires_at = time.monotonic() + VOICE_CACHE_TTL_SECONDS
@@ -971,7 +1021,7 @@ def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
                 VOICE_AUDIO_CACHE.pop(cached_token, None)
             while len(VOICE_AUDIO_CACHE) >= 32:
                 VOICE_AUDIO_CACHE.pop(next(iter(VOICE_AUDIO_CACHE)))
-            VOICE_AUDIO_CACHE[token] = (converted.stdout, duration_ms, expires_at)
+            VOICE_AUDIO_CACHE[token] = (mp3_output, duration_ms, expires_at)
         return f"{PUBLIC_BASE_URL}/audio/{token}.mp3", duration_ms
     except (requests.RequestException, ValueError, KeyError, OSError, subprocess.SubprocessError, wave.Error) as error:
         logger.warning("Could not create LINE voice reply: type=%s", type(error).__name__)
@@ -1319,8 +1369,18 @@ def health_check():
         "weather_care_reminders_enabled": True,
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
-        "voice_reply_enabled": bool(VOICE_REPLY_ENABLED and GEMINI_API_KEY),
+        "voice_reply_enabled": bool(
+            VOICE_REPLY_ENABLED and (
+                FISH_AUDIO_API_KEY if VOICE_REPLY_PROVIDER == "fish" else GEMINI_API_KEY
+            )
+        ),
+        "voice_reply_provider": VOICE_REPLY_PROVIDER,
         "voice_reply_model": VOICE_REPLY_MODEL,
+        "voice_reply_mode": (
+            "custom" if FISH_AUDIO_REFERENCE_ID else "prebuilt"
+        ) if VOICE_REPLY_PROVIDER == "fish" else (
+            "custom" if GEMINI_TTS_VOICE_ID else "prebuilt"
+        ),
         "voice_reply_audio_hosting_enabled": True,
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
     }
