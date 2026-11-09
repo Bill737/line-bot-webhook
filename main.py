@@ -7,15 +7,20 @@ import os
 import random
 import re
 import sqlite3
+import secrets
+import subprocess
+import threading
 import time
 import calendar
+import io
+import wave
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -32,6 +37,13 @@ PUSH_API_KEY = os.getenv("PUSH_API_KEY", "")
 # `apikey` is supported for compatibility with the existing Render environment.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("apikey", "")
 GEMINI_CLIENT = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+VOICE_REPLY_ENABLED = os.getenv("VOICE_REPLY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+VOICE_REPLY_MODEL = "gemini-2.5-flash-preview-tts"
+VOICE_REPLY_NAME = os.getenv("VOICE_REPLY_NAME", "Leda")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://line-bot-webhook-thi0.onrender.com").rstrip("/")
+VOICE_CACHE_TTL_SECONDS = 15 * 60
+VOICE_AUDIO_CACHE: dict[str, tuple[bytes, int, float]] = {}
+VOICE_AUDIO_LOCK = threading.Lock()
 MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "data/hu_tao_memory.sqlite3")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
@@ -864,7 +876,7 @@ def reply_bubbles(text: str, max_bubbles: int = 5) -> list[str]:
     return bubbles
 
 
-def expressive_reply_messages(text: str) -> list[dict[str, str]]:
+def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
     """Add either one approved LINE sticker or one kaomoji, never both."""
     chunks = reply_bubbles(text)
     if not chunks:
@@ -883,6 +895,105 @@ def expressive_reply_messages(text: str) -> list[dict[str, str]]:
     if len(chunks[-1]) + len(kaomoji) + 1 <= 5000:
         chunks[-1] += " " + kaomoji
     return [{"type": "text", "text": chunk} for chunk in chunks]
+
+
+def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
+    """Create a short-lived MP3 in a youthful, lively Mandarin voice for LINE."""
+    if not VOICE_REPLY_ENABLED or not GEMINI_API_KEY or not text.strip() or len(text) > 6000:
+        return None
+    try:
+        tts_response = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{VOICE_REPLY_MODEL}:generateContent",
+            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{
+                    "text": (
+                        "請把『朗讀內容』逐字用國語念出來。聲音自然、年輕、明亮活潑，語速輕快但咬字清楚，"
+                        "帶一點俏皮和親切感；不要模仿任何真人配音員或既有角色的原聲。\n"
+                        f"朗讀內容：\n{text}"
+                    )
+                }]}],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "languageCode": "cmn-CN",
+                        "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": VOICE_REPLY_NAME}},
+                    },
+                },
+            },
+            timeout=(10, 60),
+        )
+        if not tts_response.ok:
+            logger.warning("Gemini voice generation failed with HTTP %s", tts_response.status_code)
+            return None
+        payload = tts_response.json()
+        audio_bytes = None
+        mime_type = ""
+        for candidate in payload.get("candidates", []):
+            for part in (candidate.get("content") or {}).get("parts", []):
+                inline = part.get("inlineData") or part.get("inline_data")
+                if inline and inline.get("data"):
+                    audio_bytes = base64.b64decode(inline["data"], validate=True)
+                    mime_type = str(inline.get("mimeType") or inline.get("mime_type") or "audio/pcm").lower()
+                    break
+            if audio_bytes:
+                break
+        if not audio_bytes:
+            logger.warning("Gemini voice generation returned no audio")
+            return None
+
+        if "wav" in mime_type:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as audio_wave:
+                duration_ms = round(audio_wave.getnframes() * 1000 / audio_wave.getframerate())
+            ffmpeg_input = ["-i", "pipe:0"]
+        else:
+            sample_rate_match = re.search(r"rate=(\d+)", mime_type)
+            sample_rate = int(sample_rate_match.group(1)) if sample_rate_match else 24000
+            duration_ms = round(len(audio_bytes) * 1000 / (sample_rate * 2))
+            ffmpeg_input = ["-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0"]
+
+        converted = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", *ffmpeg_input,
+             "-vn", "-codec:a", "libmp3lame", "-b:a", "64k", "-f", "mp3", "pipe:1"],
+            input=audio_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=45,
+            check=False,
+        )
+        if converted.returncode != 0 or not converted.stdout:
+            logger.warning("Could not convert generated voice audio to MP3")
+            return None
+        token = secrets.token_urlsafe(24)
+        expires_at = time.monotonic() + VOICE_CACHE_TTL_SECONDS
+        with VOICE_AUDIO_LOCK:
+            for cached_token in [key for key, value in VOICE_AUDIO_CACHE.items() if value[2] <= time.monotonic()]:
+                VOICE_AUDIO_CACHE.pop(cached_token, None)
+            while len(VOICE_AUDIO_CACHE) >= 32:
+                VOICE_AUDIO_CACHE.pop(next(iter(VOICE_AUDIO_CACHE)))
+            VOICE_AUDIO_CACHE[token] = (converted.stdout, duration_ms, expires_at)
+        return f"{PUBLIC_BASE_URL}/audio/{token}.mp3", duration_ms
+    except (requests.RequestException, ValueError, KeyError, OSError, subprocess.SubprocessError, wave.Error) as error:
+        logger.warning("Could not create LINE voice reply: type=%s", type(error).__name__)
+        return None
+
+
+@app.get("/audio/{audio_token}.mp3")
+def serve_voice_reply(audio_token: str):
+    """Serve an ephemeral MP3 for LINE to fetch; audio is never persisted to disk."""
+    with VOICE_AUDIO_LOCK:
+        entry = VOICE_AUDIO_CACHE.get(audio_token)
+        if entry and entry[2] <= time.monotonic():
+            VOICE_AUDIO_CACHE.pop(audio_token, None)
+            entry = None
+    if not entry:
+        raise HTTPException(status_code=404, detail="Audio is unavailable or expired")
+    audio_bytes, _, _ = entry
+    return Response(
+        content=audio_bytes,
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "private, max-age=300", "Content-Length": str(len(audio_bytes))},
+    )
 
 
 class PushRequest(BaseModel):
@@ -1142,6 +1253,31 @@ def process_events(events: list[dict[str, Any]]) -> None:
                         and message.get("text", "").strip() not in {"忘記我", "清除記憶", "重置記憶"}
                         and not message.get("text", "").strip().startswith(("記事", "提醒", "記憶", "最近聊天", "對話記錄"))):
                     record_interaction(source["userId"], user_message, reply_text)
+                voice_audio = synthesize_voice_reply(reply_text)
+                voice_target = source.get("groupId") or source.get("roomId") or source.get("userId")
+                if voice_audio and voice_target:
+                    audio_url, duration_ms = voice_audio
+                    try:
+                        voice_response = requests.post(
+                            "https://api.line.me/v2/bot/message/push",
+                            headers={
+                                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "to": voice_target,
+                                "messages": [{
+                                    "type": "audio",
+                                    "originalContentUrl": audio_url,
+                                    "duration": duration_ms,
+                                }],
+                            },
+                            timeout=15,
+                        )
+                        if not voice_response.ok:
+                            logger.warning("LINE voice push failed with HTTP %s", voice_response.status_code)
+                    except requests.RequestException as error:
+                        logger.warning("LINE voice push failed: type=%s", type(error).__name__)
             else:
                 # Do not log response bodies; they may contain user or request data.
                 logger.error("LINE reply failed with HTTP %s", response.status_code)
@@ -1183,6 +1319,9 @@ def health_check():
         "weather_care_reminders_enabled": True,
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
+        "voice_reply_enabled": bool(VOICE_REPLY_ENABLED and GEMINI_API_KEY),
+        "voice_reply_model": VOICE_REPLY_MODEL,
+        "voice_reply_audio_hosting_enabled": True,
         "webhook_signature_configured": bool(LINE_CHANNEL_SECRET),
     }
 
