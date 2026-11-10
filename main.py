@@ -907,7 +907,7 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
 
 
 def add_fish_speech_pauses(text: str) -> str:
-    """Match Fish S2 vocal delivery to each sentence's emotional context."""
+    """Match Fish S2 vocal delivery to each sentence without adding silence tags."""
     if re.search(r"\[(?:gentle and calm|curious and playful|lively and playful|warm and happy|playful and warm)\]", text, re.IGNORECASE):
         return text
 
@@ -930,11 +930,9 @@ def add_fish_speech_pauses(text: str) -> str:
             else:
                 delivery = "[playful and warm]"
             directed_sentences.append(f"{delivery} {sentence}")
-        if len(directed_sentences) > 1:
-            formatted_paragraphs.append(" [short pause] ".join(directed_sentences))
-        elif directed_sentences:
-            formatted_paragraphs.append(directed_sentences[0])
-    return " [long pause] ".join(formatted_paragraphs)
+        if directed_sentences:
+            formatted_paragraphs.append(" ".join(directed_sentences))
+    return " ".join(formatted_paragraphs)
 
 
 def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
