@@ -907,7 +907,7 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
 
 
 def add_fish_emotion_direction(text: str) -> str:
-    """Use one delivery direction per reply to avoid abrupt mid-clip timbre shifts."""
+    """Use one delivery direction and a few clause pauses per reply."""
     normalized_text = re.sub(r"\s+", " ", text).strip()
     if not normalized_text:
         return normalized_text
@@ -926,7 +926,21 @@ def add_fish_emotion_direction(text: str) -> str:
         delivery = "[warm and happy]"
     else:
         delivery = "[playful and warm]"
-    return f"{delivery} {normalized_text}"
+
+    pause_count = 0
+
+    def add_clause_pause(match: re.Match[str]) -> str:
+        nonlocal pause_count
+        punctuation = match.group(1)
+        if pause_count >= 3:
+            return punctuation
+        pause_count += 1
+        return f"{punctuation} [short pause]"
+
+    # Commas and semicolons mark spoken clauses. Keep sentence-final pauses
+    # natural, and cap added pauses so longer replies don't become stop-and-go.
+    paced_text = re.sub(r"([，,；;][」』”’\"']*)(?=\s*\S)", add_clause_pause, normalized_text)
+    return f"{delivery} {paced_text}"
 
 
 def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
