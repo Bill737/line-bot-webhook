@@ -907,8 +907,8 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
 
 
 def add_fish_speech_pauses(text: str) -> str:
-    """Add natural sentence and paragraph pauses without injecting spoken prompt text."""
-    if re.search(r"\[(?:short\s+pause|long\s+pause|pause)\]", text, re.IGNORECASE):
+    """Add concise playful delivery tags and natural sentence/paragraph pauses."""
+    if "[playful, warm, low voice]" in text:
         return text
 
     paragraphs = [re.sub(r"\s+", " ", part).strip() for part in re.split(r"\n\s*\n+", text.strip())]
@@ -917,10 +917,11 @@ def add_fish_speech_pauses(text: str) -> str:
     for paragraph in paragraphs:
         sentences = re.findall(r".+?[。！？!?](?:[」』”’\"']*)|.+", paragraph)
         sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
-        if len(sentences) > 1:
-            formatted_paragraphs.append(" [short pause] ".join(sentences))
-        elif sentences:
-            formatted_paragraphs.append(sentences[0])
+        directed_sentences = [f"[playful, warm, low voice] {sentence}" for sentence in sentences]
+        if len(directed_sentences) > 1:
+            formatted_paragraphs.append(" [short pause] ".join(directed_sentences))
+        elif directed_sentences:
+            formatted_paragraphs.append(directed_sentences[0])
     return " [long pause] ".join(formatted_paragraphs)
 
 
