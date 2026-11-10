@@ -906,6 +906,24 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": chunk} for chunk in chunks]
 
 
+def add_fish_speech_pauses(text: str) -> str:
+    """Mark natural sentence and paragraph breaks for Fish Audio S2 TTS."""
+    if re.search(r"\[(?:short\s+pause|long\s+pause|pause)\]", text, re.IGNORECASE):
+        return text
+
+    paragraphs = [re.sub(r"\s+", " ", part).strip() for part in re.split(r"\n\s*\n+", text.strip())]
+    paragraphs = [paragraph for paragraph in paragraphs if paragraph]
+    formatted_paragraphs = []
+    for paragraph in paragraphs:
+        sentences = re.findall(r".+?[。！？!?](?:[」』”’\"']*)|.+", paragraph)
+        sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+        if len(sentences) > 1:
+            formatted_paragraphs.append(" [short pause] ".join(sentences))
+        elif sentences:
+            formatted_paragraphs.append(sentences[0])
+    return " [long pause] ".join(formatted_paragraphs)
+
+
 def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
     """Create a short-lived MP3 with Fish Audio or Gemini TTS."""
     provider_key = FISH_AUDIO_API_KEY if VOICE_REPLY_PROVIDER == "fish" else GEMINI_API_KEY
@@ -923,7 +941,11 @@ def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
                     "Content-Type": "application/json",
                     "model": VOICE_REPLY_MODEL,
                 },
-                json={"text": text, "reference_id": FISH_AUDIO_REFERENCE_ID, "format": "mp3"},
+                json={
+                    "text": add_fish_speech_pauses(text),
+                    "reference_id": FISH_AUDIO_REFERENCE_ID,
+                    "format": "mp3",
+                },
                 timeout=(10, 60),
             )
             if not tts_response.ok:
