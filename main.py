@@ -907,8 +907,8 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
 
 
 def add_fish_speech_pauses(text: str) -> str:
-    """Mark natural sentence and paragraph breaks for Fish Audio S2 TTS."""
-    if re.search(r"\[(?:short\s+pause|long\s+pause|pause)\]", text, re.IGNORECASE):
+    """Add clear diction, rounded timbre, contextual emotion, and natural pauses."""
+    if "[中文咬字清楚準確" in text:
         return text
 
     paragraphs = [re.sub(r"\s+", " ", part).strip() for part in re.split(r"\n\s*\n+", text.strip())]
@@ -917,10 +917,22 @@ def add_fish_speech_pauses(text: str) -> str:
     for paragraph in paragraphs:
         sentences = re.findall(r".+?[。！？!?](?:[」』”’\"']*)|.+", paragraph)
         sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
-        if len(sentences) > 1:
-            formatted_paragraphs.append(" [short pause] ".join(sentences))
-        elif sentences:
-            formatted_paragraphs.append(sentences[0])
+        directed_sentences = []
+        for sentence in sentences:
+            if re.search(r"自殺|自傷|輕生|喪親|過世|癌症|急診|葬禮|性侵|霸凌|難過|痛苦", sentence):
+                emotion = "溫柔沉穩、誠懇安定"
+            elif re.search(r"[？?]", sentence):
+                emotion = "親切好奇，句尾自然微微上揚"
+            elif re.search(r"[！!]", sentence):
+                emotion = "活潑明快、有精神，但不要提高尖銳度"
+            elif re.search(r"恭喜|太好了|開心|成功|喜歡|期待|好耶", sentence):
+                emotion = "溫暖愉快，帶著笑意"
+            else:
+                emotion = "自然親切，語調有高低起伏，不要平板"
+            direction = f"[中文咬字清楚準確，聲母韻尾完整；音色溫暖圓潤、略低柔、不尖銳；{emotion}]"
+            directed_sentences.append(f"{direction} {sentence}")
+        if directed_sentences:
+            formatted_paragraphs.append(" [short pause] ".join(directed_sentences))
     return " [long pause] ".join(formatted_paragraphs)
 
 
