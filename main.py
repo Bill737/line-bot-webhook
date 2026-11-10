@@ -906,33 +906,27 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": chunk} for chunk in chunks]
 
 
-def add_fish_speech_pauses(text: str) -> str:
-    """Match Fish S2 vocal delivery to each sentence without adding silence tags."""
-    if re.search(r"\[(?:gentle and calm|curious and playful|lively and playful|warm and happy|playful and warm)\]", text, re.IGNORECASE):
-        return text
+def add_fish_emotion_direction(text: str) -> str:
+    """Use one delivery direction per reply to avoid abrupt mid-clip timbre shifts."""
+    normalized_text = re.sub(r"\s+", " ", text).strip()
+    if not normalized_text:
+        return normalized_text
 
-    paragraphs = [re.sub(r"\s+", " ", part).strip() for part in re.split(r"\n\s*\n+", text.strip())]
-    paragraphs = [paragraph for paragraph in paragraphs if paragraph]
-    formatted_paragraphs = []
-    for paragraph in paragraphs:
-        sentences = re.findall(r".+?[。！？!?](?:[」』”’\"']*)|.+", paragraph)
-        sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
-        directed_sentences = []
-        for sentence in sentences:
-            if re.search(r"自殺|自傷|輕生|喪親|過世|癌症|急診|葬禮|性侵|霸凌|難過|痛苦|害怕|擔心|抱歉|對不起|失去", sentence):
-                delivery = "[gentle and calm]"
-            elif re.search(r"[？?]", sentence):
-                delivery = "[curious and playful]"
-            elif re.search(r"[！!]", sentence):
-                delivery = "[lively and playful]"
-            elif re.search(r"恭喜|太好了|開心|成功|喜歡|期待|好耶|謝謝|感謝", sentence):
-                delivery = "[warm and happy]"
-            else:
-                delivery = "[playful and warm]"
-            directed_sentences.append(f"{delivery} {sentence}")
-        if directed_sentences:
-            formatted_paragraphs.append(" ".join(directed_sentences))
-    return " ".join(formatted_paragraphs)
+    # Fish S2 applies inline directions from their position onward. Switching tags
+    # sentence by sentence can sound like a throat catch when the timbre changes.
+    # Pick a single direction for the whole reply so transitions happen only
+    # between separate audio messages, never inside one generated clip.
+    if re.search(r"自殺|自傷|輕生|喪親|過世|癌症|急診|葬禮|性侵|霸凌|難過|痛苦|害怕|擔心|抱歉|對不起|失去", normalized_text):
+        delivery = "[gentle and calm]"
+    elif re.search(r"[？?]\s*[」』”’\"']*$", normalized_text):
+        delivery = "[curious and playful]"
+    elif re.search(r"[！!]\s*[」』”’\"']*$", normalized_text):
+        delivery = "[lively and playful]"
+    elif re.search(r"恭喜|太好了|開心|成功|喜歡|期待|好耶|謝謝|感謝", normalized_text):
+        delivery = "[warm and happy]"
+    else:
+        delivery = "[playful and warm]"
+    return f"{delivery} {normalized_text}"
 
 
 def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
@@ -953,7 +947,7 @@ def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
                     "model": VOICE_REPLY_MODEL,
                 },
                 json={
-                    "text": add_fish_speech_pauses(text),
+                    "text": add_fish_emotion_direction(text),
                     "reference_id": FISH_AUDIO_REFERENCE_ID,
                     "format": "mp3",
                 },
