@@ -907,8 +907,8 @@ def expressive_reply_messages(text: str) -> list[dict[str, Any]]:
 
 
 def add_fish_speech_pauses(text: str) -> str:
-    """Add concise playful delivery tags and natural sentence/paragraph pauses."""
-    if "[playful, warm, low voice]" in text:
+    """Match Fish S2 vocal delivery to each sentence's emotional context."""
+    if re.search(r"\[(?:gentle and calm|curious and playful|lively and playful|warm and happy|playful and warm)\]", text, re.IGNORECASE):
         return text
 
     paragraphs = [re.sub(r"\s+", " ", part).strip() for part in re.split(r"\n\s*\n+", text.strip())]
@@ -917,7 +917,19 @@ def add_fish_speech_pauses(text: str) -> str:
     for paragraph in paragraphs:
         sentences = re.findall(r".+?[。！？!?](?:[」』”’\"']*)|.+", paragraph)
         sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
-        directed_sentences = [f"[playful, warm, low voice] {sentence}" for sentence in sentences]
+        directed_sentences = []
+        for sentence in sentences:
+            if re.search(r"自殺|自傷|輕生|喪親|過世|癌症|急診|葬禮|性侵|霸凌|難過|痛苦|害怕|擔心|抱歉|對不起|失去", sentence):
+                delivery = "[gentle and calm]"
+            elif re.search(r"[？?]", sentence):
+                delivery = "[curious and playful]"
+            elif re.search(r"[！!]", sentence):
+                delivery = "[lively and playful]"
+            elif re.search(r"恭喜|太好了|開心|成功|喜歡|期待|好耶|謝謝|感謝", sentence):
+                delivery = "[warm and happy]"
+            else:
+                delivery = "[playful and warm]"
+            directed_sentences.append(f"{delivery} {sentence}")
         if len(directed_sentences) > 1:
             formatted_paragraphs.append(" [short pause] ".join(directed_sentences))
         elif directed_sentences:
