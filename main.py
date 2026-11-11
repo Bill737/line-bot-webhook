@@ -1411,6 +1411,17 @@ def process_events(events: list[dict[str, Any]]) -> None:
 def health_check():
     now_utc = datetime.now(timezone.utc)
     now_taipei = now_utc.astimezone(TAIPEI_TZ)
+    line_token_status = "not_configured"
+    if LINE_CHANNEL_ACCESS_TOKEN:
+        try:
+            token_check = requests.get(
+                "https://api.line.me/v2/bot/info",
+                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"},
+                timeout=5,
+            )
+            line_token_status = "valid" if token_check.ok else f"invalid_http_{token_check.status_code}"
+        except requests.RequestException:
+            line_token_status = "check_failed"
     return {
         "status": "ok",
         "message": "LINE Bot Webhook Server is running",
@@ -1441,6 +1452,7 @@ def health_check():
         "weather_care_reminders_enabled": True,
         "proactive_push_configured": len(PUSH_API_KEY) >= 32,
         "line_reply_configured": bool(LINE_CHANNEL_ACCESS_TOKEN),
+        "line_token_status": line_token_status,
         "voice_reply_enabled": bool(
             VOICE_REPLY_ENABLED and (
                 FISH_AUDIO_API_KEY if VOICE_REPLY_PROVIDER == "fish" else GEMINI_API_KEY
