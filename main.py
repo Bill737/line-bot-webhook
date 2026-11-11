@@ -1224,15 +1224,21 @@ def create_reply(
     return "抱歉，AI 服務暫時無法回答，請稍後再試。"
 
 
-def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int | str | None]:
-    """Download the LINE image, retrying transient failures during both headers and body."""
-    url = f"https://api-data.line.me/v2/bot/message/{message_id}/content"
+def _download_image_url(
+    url: str,
+    *,
+    use_line_auth: bool,
+) -> tuple[bytes | None, str | None, int | str | None]:
+    """Download an image while keeping LINE credentials off external URLs."""
+    if not url.lower().startswith("https://"):
+        return None, None, "invalid_url"
+    headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"} if use_line_auth else {}
     for attempt in range(3):
         image_response = None
         try:
             image_response = requests.get(
                 url,
-                headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"},
+                headers=headers,
                 stream=True,
                 timeout=(5, 20),
             )
@@ -1270,6 +1276,19 @@ def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int 
     return None, None, "network"
 
 
+def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int | str | None]:
+    """Download an image stored by LINE using the channel access token."""
+    return _download_image_url(
+        f"https://api-data.line.me/v2/bot/message/{message_id}/content",
+        use_line_auth=True,
+    )
+
+
+def download_external_image(url: str) -> tuple[bytes | None, str | None, int | str | None]:
+    """Download an image URL supplied by LINE's external content provider."""
+    return _download_image_url(url, use_line_auth=False)
+
+
 def detect_image_mime_type(image_bytes: bytes) -> str | None:
     """Detect common LINE image formats from their magic bytes."""
     if image_bytes.startswith(b"\xff\xd8\xff"):
@@ -1299,13 +1318,25 @@ def process_events(events: list[dict[str, Any]]) -> None:
         user_message = message.get("text", "") if message.get("type") == "text" else ""
         if message.get("type") == "image":
             message_id = message.get("id")
-            if not message_id:
+            content_provider = message.get("contentProvider") or {}
+            provider_type = str(content_provider.get("type") or "line").lower()
+            logger.info("LINE image provider=%s", provider_type)
+            if provider_type == "external":
+                image_url = content_provider.get("originalContentUrl")
+                if not image_url:
+                    reply_text = "我收到外部圖片了，但 LINE 沒提供圖片網址，暫時讀不到內容。請重新傳送原圖。"
+                else:
+                    image_bytes, mime_type, download_error = download_external_image(str(image_url))
+            elif not message_id:
                 reply_text = "我收到圖片了，但 LINE 沒附上圖片編號，暫時讀不到內容。請再傳一次吧。"
             else:
                 image_bytes, mime_type, download_error = download_line_image(str(message_id))
+            if provider_type == "external" and image_url and download_error == "invalid_url":
+                reply_text = "外部圖片網址不是 HTTPS，為了安全無法讀取；請直接把原圖傳到 LINE。"
+            if message_id or (provider_type == "external" and image_url):
                 if isinstance(download_error, int):
                     if download_error in {401, 403}:
-                        reply_text = f"LINE 圖片下載被拒絕（HTTP {download_error}）。請確認 Render 的 LINE_CHANNEL_ACCESS_TOKEN 有效，且屬於這個 LINE 官方帳號。"
+                        reply_text = f"圖片來源拒絕下載（HTTP {download_error}）。請重新傳送原圖；若是 LINE 原生圖片，再確認 Channel access token。"
                     elif download_error in {404, 410}:
                         reply_text = f"LINE 找不到這張圖片（HTTP {download_error}），圖片可能已失效。請重新傳送原圖。"
                     else:
