@@ -32,7 +32,12 @@ logger = logging.getLogger("line_bot")
 
 app = FastAPI()
 
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+# Render variables are sometimes pasted with whitespace or the literal
+# ``Bearer`` prefix.  Normalize once so every LINE API call uses exactly one
+# authorization prefix.
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+if LINE_CHANNEL_ACCESS_TOKEN.lower().startswith("bearer "):
+    LINE_CHANNEL_ACCESS_TOKEN = LINE_CHANNEL_ACCESS_TOKEN[7:].strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 PUSH_API_KEY = os.getenv("PUSH_API_KEY", "")
 # `apikey` is supported for compatibility with the existing Render environment.
