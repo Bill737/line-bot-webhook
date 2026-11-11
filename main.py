@@ -1244,7 +1244,11 @@ def _download_image_url(
             )
             if not image_response.ok:
                 status_code = image_response.status_code
-                logger.warning("LINE image download failed with HTTP %s", status_code)
+                logger.warning(
+                    "LINE image download failed with HTTP %s: %s",
+                    status_code,
+                    line_error_message(image_response),
+                )
                 if status_code in {408, 429, 500, 502, 503, 504} and attempt < 2:
                     time.sleep(0.5 * (attempt + 1))
                     continue
@@ -1274,6 +1278,16 @@ def _download_image_url(
             if image_response is not None:
                 image_response.close()
     return None, None, "network"
+
+
+def line_error_message(response: requests.Response) -> str:
+    """Extract only a short, non-secret LINE API error description for logs."""
+    try:
+        payload = response.json()
+        message = payload.get("message") or payload.get("error") or "non_json_error"
+        return str(message)[:160]
+    except (ValueError, TypeError, AttributeError):
+        return "non_json_error"
 
 
 def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int | str | None]:
@@ -1437,7 +1451,14 @@ def process_events(events: list[dict[str, Any]]) -> None:
                         logger.warning("LINE voice push failed: type=%s", type(error).__name__)
             else:
                 # Do not log response bodies; they may contain user or request data.
-                logger.error("LINE reply failed with HTTP %s", response.status_code)
+                destination = str(event.get("destination") or "")
+                destination_fingerprint = hashlib.sha256(destination.encode()).hexdigest()[:12] if destination else "none"
+                logger.error(
+                    "LINE reply failed with HTTP %s: %s destination=%s",
+                    response.status_code,
+                    line_error_message(response),
+                    destination_fingerprint,
+                )
         except requests.RequestException:
             logger.exception("LINE reply request failed")
 
