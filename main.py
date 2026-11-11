@@ -1205,10 +1205,11 @@ def create_reply(
                     )
                     break
                 logger.error(
-                    "Gemini request failed: type=%s status=%s",
-                    type(error).__name__,
-                    status_code,
+                    "Gemini request failed: type=%s status=%s model=%s image=%s",
+                    type(error).__name__, status_code, model, image_part is not None,
                 )
+                if image_part is not None and status_code in {400, 413, 415, 422}:
+                    return "圖片我收到了，但這張圖片的格式或內容目前無法分析；請改傳清晰的 JPEG、PNG 或 WebP 原圖。"
                 return "抱歉，AI 服務暫時無法回答，請稍後再試。"
 
     return "抱歉，AI 服務暫時無法回答，請稍後再試。"
@@ -1234,14 +1235,19 @@ def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int 
                     continue
                 return None, None, status_code
 
-            mime_type = image_response.headers.get("Content-Type", "").split(";", 1)[0].lower()
+            declared_mime_type = image_response.headers.get("Content-Type", "").split(";", 1)[0].lower()
             image_bytes = bytearray()
             for chunk in image_response.iter_content(chunk_size=64 * 1024):
                 if chunk:
                     image_bytes.extend(chunk)
                     if len(image_bytes) > 20 * 1024 * 1024:
-                        return bytes(image_bytes), mime_type, "too_large"
-            return bytes(image_bytes), mime_type, None
+                        return bytes(image_bytes), declared_mime_type, "too_large"
+            image_data = bytes(image_bytes)
+            # LINE may occasionally send application/octet-stream or omit the
+            # content type. Trust the file signature when the header is vague.
+            detected_mime_type = detect_image_mime_type(image_data)
+            mime_type = detected_mime_type or declared_mime_type
+            return image_data, mime_type, None
         except requests.RequestException as error:
             if attempt < 2:
                 logger.warning("LINE image download network error; retry %s/2: type=%s", attempt + 1, type(error).__name__)
@@ -1253,6 +1259,19 @@ def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int 
             if image_response is not None:
                 image_response.close()
     return None, None, "network"
+
+
+def detect_image_mime_type(image_bytes: bytes) -> str | None:
+    """Detect common LINE image formats from their magic bytes."""
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(image_bytes) >= 12 and image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def process_events(events: list[dict[str, Any]]) -> None:
@@ -1289,8 +1308,15 @@ def process_events(events: list[dict[str, Any]]) -> None:
                 elif mime_type not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
                     reply_text = "LINE 傳來的圖片格式讀不到，請傳 JPEG、PNG、WebP 或 GIF 圖片。"
                 elif image_bytes:
-                    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-                    user_message = "[使用者傳送圖片，請依圖片內容回答；若未附問題，請先描述圖片重點。]"
+                    try:
+                        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+                        user_message = "[使用者傳送圖片，請依圖片內容回答；若未附問題，請先描述圖片重點。]"
+                    except Exception as error:
+                        logger.warning(
+                            "Could not create Gemini image part: type=%s mime=%s bytes=%s",
+                            type(error).__name__, mime_type or "unknown", len(image_bytes),
+                        )
+                        reply_text = "圖片格式已收到，但 AI 暫時無法讀取這張圖片；請改傳 JPEG、PNG 或 WebP 原圖。"
                 else:
                     reply_text = "LINE 下載到的圖片內容是空的，請重新傳送原圖。"
         elif message.get("type") == "sticker":
