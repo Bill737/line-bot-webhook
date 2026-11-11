@@ -1292,10 +1292,17 @@ def line_error_message(response: requests.Response) -> str:
 
 def download_line_image(message_id: str) -> tuple[bytes | None, str | None, int | str | None]:
     """Download an image stored by LINE using the channel access token."""
-    return _download_image_url(
+    result = _download_image_url(
         f"https://api-data.line.me/v2/bot/message/{message_id}/content",
         use_line_auth=True,
     )
+    if isinstance(result[2], int) and result[2] in {401, 403}:
+        logger.info("LINE image content denied; trying preview endpoint")
+        return _download_image_url(
+            f"https://api-data.line.me/v2/bot/message/{message_id}/content/preview",
+            use_line_auth=True,
+        )
+    return result
 
 
 def download_external_image(url: str) -> tuple[bytes | None, str | None, int | str | None]:
