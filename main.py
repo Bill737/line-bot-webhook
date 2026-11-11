@@ -1337,10 +1337,19 @@ def process_events(events: list[dict[str, Any]]) -> None:
             logger.info("LINE image provider=%s", provider_type)
             if provider_type == "external":
                 image_url = content_provider.get("originalContentUrl")
+                preview_url = content_provider.get("previewImageUrl")
                 if not image_url:
                     reply_text = "我收到外部圖片了，但 LINE 沒提供圖片網址，暫時讀不到內容。請重新傳送原圖。"
                 else:
                     image_bytes, mime_type, download_error = download_external_image(str(image_url))
+                    if (
+                        isinstance(download_error, int)
+                        and download_error in {401, 403}
+                        and preview_url
+                        and str(preview_url) != str(image_url)
+                    ):
+                        logger.info("LINE external image original URL denied; trying preview URL")
+                        image_bytes, mime_type, download_error = download_external_image(str(preview_url))
             elif not message_id:
                 reply_text = "我收到圖片了，但 LINE 沒附上圖片編號，暫時讀不到內容。請再傳一次吧。"
             else:
