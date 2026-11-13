@@ -721,7 +721,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             r"\1-\2-\3",
             command,
         )
-        short_date = re.fullmatch(r"提醒(?:我)?\s*(\d{1,2})月(\d{1,2})日\s+(.+)", command)
+        short_date = re.fullmatch(r"提醒\s*我?\s*(\d{1,2})月(\d{1,2})日\s*(.+)", command)
         if short_date:
             month, day = int(short_date.group(1)), int(short_date.group(2))
             year = datetime.now(TAIPEI_TZ).year
@@ -732,7 +732,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 command = f"提醒 {candidate:%Y-%m-%d} {short_date.group(3)}"
             except ValueError:
                 return "日期不太對喔。可以傳「提醒 2026-11-05 09:30 記得帶傘」。"
-        match = re.fullmatch(r"提醒(?:我)?\s+(?:(\d{4})[-/](\d{1,2})[-/](\d{1,2})|(今天|明天|後天|后天))\s*(?:(\d{1,2}):(\d{2})|(早上|上午|中午|下午|晚上)\s*(\d{1,2})(?:點|点)(?:(\d{1,2})分?)?)\s+(.+)", command)
+        match = re.fullmatch(r"提醒\s*我?\s*(?:(\d{4})[-/](\d{1,2})[-/](\d{1,2})|(今天|明天|後天|后天))\s*(?:(\d{1,2}):(\d{2})|(早上|上午|中午|下午|晚上)\s*(\d{1,2})(?:點|点)(?:(\d{1,2})分?)?)\s+(.+)", command)
         if match:
             year, month, day, relative, hour, minute, meridiem, cn_hour, cn_minute, content = match.groups()
             try:
@@ -760,7 +760,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 return "提醒時間要設在未來喔，格式：提醒 2026-11-05 09:30 記得帶傘（UTC+8）"
             connection.execute("INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)", (user_id, content[:1000], due if DATABASE_URL else due.isoformat()))
             return f"好，{due:%Y/%m/%d} 星期{'一二三四五六日'[due.weekday()]} {due:%H:%M}（台灣時間 UTC+8）提醒你：{content}"
-        if command in {"提醒列表", "提醒 列表"}:
+        if re.fullmatch(r"(?:提醒\s*列表|查看\s*提醒|查詢\s*提醒|提醒\s*list)", command, re.IGNORECASE):
             rows = connection.execute("SELECT id, content, remind_at FROM reminders WHERE user_id=? AND status='pending' ORDER BY remind_at LIMIT 30", (user_id,)).fetchall()
             removed_note = f"已清除 {expired_reminders_removed} 筆超過十分鐘的逾期提醒。\n" if expired_reminders_removed else ""
             if not rows:
@@ -774,7 +774,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 weekday = "一二三四五六日"[due.weekday()]
                 items.append(f"{reminder_id}. {due:%Y/%m/%d} 星期{weekday} {due:%H:%M}｜{content}")
             return removed_note + "待辦提醒（台灣時間 Asia/Taipei，UTC+8）：\n" + "\n".join(items)
-        match = re.fullmatch(r"提醒(?:取消| 取消)\s+(\d+)", command)
+        match = re.fullmatch(r"(?:(?:提醒\s*(?:取消|刪除))|(?:取消|刪除)\s*提醒)\s*(\d+)", command)
         if match:
             result = connection.execute("DELETE FROM reminders WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
             return "提醒取消啦。" if result.rowcount else "找不到這筆待辦提醒，傳「提醒列表」查看編號吧。"
