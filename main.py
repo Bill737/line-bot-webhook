@@ -55,6 +55,10 @@ VOICE_REPLY_MODEL = (
     else os.getenv("GEMINI_TTS_MODEL", "gemini-3.8-flash-tts")
 )
 VOICE_REPLY_NAME = os.getenv("VOICE_REPLY_NAME", "Leda")
+try:
+    VOICE_REPLY_PITCH_SEMITONES = max(0.0, min(2.0, float(os.getenv("VOICE_REPLY_PITCH_SEMITONES", "2"))))
+except ValueError:
+    VOICE_REPLY_PITCH_SEMITONES = 2.0
 GEMINI_TTS_VOICE_ID = os.getenv("GEMINI_TTS_VOICE_ID", "").strip()
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
 FISH_AUDIO_REFERENCE_ID = os.getenv("FISH_AUDIO_REFERENCE_ID", "")
@@ -98,7 +102,7 @@ HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
 - 一般問題以約 2–5 句為主；複雜問題可用短段落或條列，完整保留重要條件、步驟與例外，不要為了短而漏掉關鍵資訊。使用者要求詳細時再展開。
 - 回覆要把問題答完整，不要為了精簡省略必要步驟或結論；長回答可分成多個訊息氣泡，並在完整句子或詞語處分段。
 - 不要自行輸出顏文字；系統會在傳送一則 LINE 貼圖或加上一個顏文字之間擇一，避免兩者一起出現。
-- 依問題調整語氣：日常聊天俏皮靈巧，知識與操作問題清楚可靠；自然點綴胡桃的幽默，不要每句硬塞口頭禪、詩句或往生堂推銷。
+- 依問題調整語氣：日常聊天要更俏皮、明亮、活潑，主動接住使用者的話並偶爾用輕巧雙關或打趣；知識與操作問題清楚可靠；自然點綴胡桃的幽默，不要每句硬塞口頭禪、詩句或往生堂推銷。
 - 對《原神》問題可依上述背景及已知設定回答；不要捏造官方劇情、角色關係或未確認細節，不確定時坦白說不確定。
 - 一般知識問題仍要先給正確、清楚的答案，再自然融入胡桃口吻；不要為了扮演角色而犧牲準確性。
 - 遇到喪親、疾病、自傷或其他嚴肅議題時，先收起玩笑，真誠安慰並提供可靠協助。
@@ -969,13 +973,13 @@ def add_fish_emotion_direction(text: str) -> str:
     if re.search(r"自殺|自傷|輕生|喪親|過世|癌症|急診|葬禮|性侵|霸凌|難過|痛苦|害怕|擔心|抱歉|對不起|失去", normalized_text):
         delivery = "[gentle and calm]"
     elif re.search(r"[？?]\s*[」』”’\"']*$", normalized_text):
-        delivery = "[curious and playful]"
+        delivery = "[curious, bright and playful]"
     elif re.search(r"[！!]\s*[」』”’\"']*$", normalized_text):
-        delivery = "[lively and playful]"
+        delivery = "[lively, bright and playful]"
     elif re.search(r"恭喜|太好了|開心|成功|喜歡|期待|好耶|謝謝|感謝", normalized_text):
-        delivery = "[warm and happy]"
+        delivery = "[warm, bright and happy]"
     else:
-        delivery = "[playful and warm]"
+        delivery = "[bright, lively, playful and warm]"
 
     pause_count = 0
 
@@ -1021,7 +1025,6 @@ def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
                 logger.warning("Fish Audio voice generation failed with HTTP %s", tts_response.status_code)
                 return None
             mp3_bytes = tts_response.content
-            duration_ms = round(MP3(io.BytesIO(mp3_bytes)).info.length * 1000)
             mp3_output = mp3_bytes
         elif VOICE_REPLY_PROVIDER == "gemini":
             tts_response = requests.post(
@@ -1094,6 +1097,27 @@ def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
         else:
             logger.error("Unsupported voice reply provider configured")
             return None
+        if VOICE_REPLY_PITCH_SEMITONES > 0:
+            pitch_ratio = 2 ** (VOICE_REPLY_PITCH_SEMITONES / 12)
+            shifted = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    "-i", "pipe:0",
+                    "-af", f"rubberband=pitch={pitch_ratio:.6f}:tempo=1",
+                    "-vn", "-codec:a", "libmp3lame", "-b:a", "64k",
+                    "-f", "mp3", "pipe:1",
+                ],
+                input=mp3_output,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=45,
+                check=False,
+            )
+            if shifted.returncode == 0 and shifted.stdout:
+                mp3_output = shifted.stdout
+            else:
+                logger.warning("Could not shift voice pitch; using original audio")
+        duration_ms = round(MP3(io.BytesIO(mp3_output)).info.length * 1000)
         token = secrets.token_urlsafe(24)
         expires_at = time.monotonic() + VOICE_CACHE_TTL_SECONDS
         with VOICE_AUDIO_LOCK:
