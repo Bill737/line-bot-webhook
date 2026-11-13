@@ -711,7 +711,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 "INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)",
                 (user_id, content[:1000], due if DATABASE_URL else due.isoformat()),
             )
-            return f"收到，{minutes} 分鐘後（約 {due:%H:%M}，台灣時間）提醒你：{content}。排程通常每 5 分鐘檢查；超過提醒時間 10 分鐘仍未送達就會刪除。"
+            return f"已加入資料庫（待提醒）。{minutes} 分鐘後（約 {due:%H:%M}，台灣時間）提醒你：{content}。可傳「提醒列表」確認；排程通常每 5 分鐘檢查。"
         if command.startswith(("幾分鐘後提醒", "提醒我幾分鐘後", "提醒幾分鐘後")):
             return "可以提醒你喔，告訴我幾分鐘和提醒內容吧，例如：「提醒我 5 分鐘後 喝水」。"
         # Accept both the documented absolute date format and common Chinese
@@ -759,7 +759,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             if due <= datetime.now(TAIPEI_TZ):
                 return "提醒時間要設在未來喔，格式：提醒 2026-11-05 09:30 記得帶傘（UTC+8）"
             connection.execute("INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)", (user_id, content[:1000], due if DATABASE_URL else due.isoformat()))
-            return f"好，{due:%Y/%m/%d} 星期{'一二三四五六日'[due.weekday()]} {due:%H:%M}（台灣時間 UTC+8）提醒你：{content}"
+            return f"已加入資料庫（待提醒）。{due:%Y/%m/%d} 星期{'一二三四五六日'[due.weekday()]} {due:%H:%M}（台灣時間 UTC+8）提醒你：{content}。可傳「提醒列表」確認。"
         if re.fullmatch(r"(?:提醒\s*列表|查看\s*提醒|查詢\s*提醒|提醒\s*list)", command, re.IGNORECASE):
             rows = connection.execute("SELECT id, content, remind_at FROM reminders WHERE user_id=? AND status='pending' ORDER BY remind_at LIMIT 30", (user_id,)).fetchall()
             removed_note = f"已清除 {expired_reminders_removed} 筆超過十分鐘的逾期提醒。\n" if expired_reminders_removed else ""
