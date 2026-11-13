@@ -62,6 +62,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://line-bot-webhook-thi0.on
 VOICE_CACHE_TTL_SECONDS = 15 * 60
 VOICE_AUDIO_CACHE: dict[str, tuple[bytes, int, float]] = {}
 VOICE_AUDIO_LOCK = threading.Lock()
+REMINDER_DISPATCH_LOCK = threading.Lock()
 MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "data/hu_tao_memory.sqlite3")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
@@ -711,6 +712,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 "INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)",
                 (user_id, content[:1000], due if DATABASE_URL else due.isoformat()),
             )
+            schedule_near_term_dispatch(due)
             return f"已加入資料庫（待提醒）。{minutes} 分鐘後（約 {due:%H:%M}，台灣時間）提醒你：{content}。可傳「提醒列表」確認；排程通常每 5 分鐘檢查。"
         if command.startswith(("幾分鐘後提醒", "提醒我幾分鐘後", "提醒幾分鐘後")):
             return "可以提醒你喔，告訴我幾分鐘和提醒內容吧，例如：「提醒我 5 分鐘後 喝水」。"
@@ -759,6 +761,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
             if due <= datetime.now(TAIPEI_TZ):
                 return "提醒時間要設在未來喔，格式：提醒 2026-11-05 09:30 記得帶傘（UTC+8）"
             connection.execute("INSERT INTO reminders(user_id, content, remind_at) VALUES (?, ?, ?)", (user_id, content[:1000], due if DATABASE_URL else due.isoformat()))
+            schedule_near_term_dispatch(due)
             return f"已加入資料庫（待提醒）。{due:%Y/%m/%d} 星期{'一二三四五六日'[due.weekday()]} {due:%H:%M}（台灣時間 UTC+8）提醒你：{content}。可傳「提醒列表」確認。"
         if re.fullmatch(r"(?:提醒\s*列表|查看\s*提醒|查詢\s*提醒|提醒\s*list)", command, re.IGNORECASE):
             rows = connection.execute("SELECT id, content, remind_at FROM reminders WHERE user_id=? AND status='pending' ORDER BY remind_at LIMIT 30", (user_id,)).fetchall()
@@ -783,7 +786,7 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
     return None
 
 
-def dispatch_due_reminders() -> int:
+def _dispatch_due_reminders() -> int:
     """Deliver reminders within their ten-minute grace period and prune expired rows."""
     now_dt = datetime.now(TAIPEI_TZ)
     now = now_dt if DATABASE_URL else now_dt.isoformat()
@@ -811,6 +814,21 @@ def dispatch_due_reminders() -> int:
             else:
                 logger.error("Reminder push failed with HTTP %s", response.status_code)
     return sent
+
+
+def dispatch_due_reminders() -> int:
+    """Serialize reminder sends so timer and GitHub fallback cannot duplicate them."""
+    with REMINDER_DISPATCH_LOCK:
+        return _dispatch_due_reminders()
+
+
+def schedule_near_term_dispatch(due: datetime) -> None:
+    """Wake the live web process at short due times; GitHub remains the fallback."""
+    delay = (due - datetime.now(TAIPEI_TZ)).total_seconds()
+    if 0 < delay <= 15 * 60:
+        timer = threading.Timer(delay + 0.2, dispatch_due_reminders)
+        timer.daemon = True
+        timer.start()
 
 
 def update_memory_summary(
