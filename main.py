@@ -56,7 +56,7 @@ VOICE_REPLY_MODEL = (
 )
 VOICE_REPLY_NAME = os.getenv("VOICE_REPLY_NAME", "Leda")
 try:
-    VOICE_REPLY_PITCH_SEMITONES = max(0.0, min(2.0, float(os.getenv("VOICE_REPLY_PITCH_SEMITONES", "2"))))
+    VOICE_REPLY_PITCH_SEMITONES = max(0.0, min(2.0, float(os.getenv("VOICE_REPLY_PITCH_SEMITONES", "0"))))
 except ValueError:
     VOICE_REPLY_PITCH_SEMITONES = 2.0
 GEMINI_TTS_VOICE_ID = os.getenv("GEMINI_TTS_VOICE_ID", "").strip()

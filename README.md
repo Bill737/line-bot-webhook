@@ -37,7 +37,7 @@
    LINE_CHANNEL_SECRET=您的ChannelSecret
    GEMINI_API_KEY=Google AI Studio API Key
    ```
-   若使用 Fish Audio，請在 Render Environment 設定 `VOICE_REPLY_PROVIDER=fish`、`FISH_AUDIO_API_KEY`（Fish API key）、`FISH_AUDIO_REFERENCE_ID`（Fish 音色頁的 model ID），並設 `FISH_AUDIO_MODEL=s2.1-pro-free`。語音預設用 FFmpeg Rubber Band 實際升高 2 個半音，可用 `VOICE_REPLY_PITCH_SEMITONES=0` 關閉，或設為 `1` 調成升高 1 個半音。Fish Audio 官方標示此 API 模型無需 API 點數；其他模型可能按字元收費，本專案預設不呼叫其他模型。首頁僅顯示目前語音服務與模型，不會顯示 key 或聲線 ID。若使用 Gemini TTS，請將 `VOICE_REPLY_PROVIDER=gemini`；必要時設定 `GEMINI_TTS_VOICE_ID` 和 `GEMINI_TTS_MODEL`。
+   若使用 Fish Audio，請在 Render Environment 設定 `VOICE_REPLY_PROVIDER=fish`、`FISH_AUDIO_API_KEY`（Fish API key）、`FISH_AUDIO_REFERENCE_ID`（Fish 音色頁的 model ID），並設 `FISH_AUDIO_MODEL=s2.1-pro-free`。語音預設保留原音色；如要升調才設定 `VOICE_REPLY_PITCH_SEMITONES=1` 或 `2`。Fish Audio 官方標示此 API 模型無需 API 點數；其他模型可能按字元收費，本專案預設不呼叫其他模型。首頁僅顯示目前語音服務與模型，不會顯示 key 或聲線 ID。若使用 Gemini TTS，請將 `VOICE_REPLY_PROVIDER=gemini`；必要時設定 `GEMINI_TTS_VOICE_ID` 和 `GEMINI_TTS_MODEL`。
    設定後重新部署服務。一般回覆預設使用較快的 `gemini-3.5-flash-lite`，可用 `GEMINI_FAST_MODEL` 更改；遇到暫時性服務錯誤時，依序改試 `GEMINI_MODEL`（預設 `gemini-3.6-flash`）與 `GEMINI_FALLBACK_MODEL`（預設 `gemini-3.8-flash`）。
 
    **要讓記事、提醒與聊天記憶跨 Render 休眠、重啟及重新部署保留，必須在 Render 設定 PostgreSQL 服務的 `DATABASE_URL`。** 本程式支援 PostgreSQL（例如 Neon）；沒有 `DATABASE_URL` 時會退回本機 SQLite，而 Render 免費執行個體的本機資料可能在重啟、重新部署或休眠後遺失。原始文字僅保留七天；較舊對話會整理成精簡摘要。建立提醒不會改變任何 LINE 對話內容送往 Gemini 的方式。
