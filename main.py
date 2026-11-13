@@ -777,6 +777,10 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
                 weekday = "一二三四五六日"[due.weekday()]
                 items.append(f"{reminder_id}. {due:%Y/%m/%d} 星期{weekday} {due:%H:%M}｜{content}")
             return removed_note + "待辦提醒（台灣時間 Asia/Taipei，UTC+8）：\n" + "\n".join(items)
+        if re.fullmatch(r"(?:提醒\s*清空|清空\s*提醒|刪除(?:全部|所有)\s*提醒)", command):
+            result = connection.execute("DELETE FROM reminders WHERE user_id=? AND status='pending'", (user_id,))
+            deleted = result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 0
+            return f"已清空提醒表，刪除 {deleted} 筆待提醒事項。現在沒有待提醒事項。"
         match = re.fullmatch(r"(?:(?:提醒\s*(?:取消|刪除))|(?:取消|刪除)\s*提醒)\s*(\d+)", command)
         if match:
             result = connection.execute("DELETE FROM reminders WHERE id=? AND user_id=? AND status='pending'", (int(match.group(1)), user_id))
