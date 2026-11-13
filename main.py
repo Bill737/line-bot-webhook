@@ -573,6 +573,18 @@ def purge_expired_reminders(user_id: str | None = None) -> int:
 def handle_personal_command(user_id: str, text: str) -> str | None:
     """Handle deterministic notes and reminder commands before sending text to the AI."""
     command = text.strip()
+    compact_command = re.sub(r"\s+", "", command)
+    if re.fullmatch(r"(?:請問)?(?:目前|現在)?(?:台灣)?(?:時間|幾點)(?:是幾點)?[？?。！!]*", compact_command):
+        now = datetime.now(TAIPEI_TZ)
+        weekdays = "一二三四五六日"
+        return f"現在是台灣時間 {now:%Y/%m/%d %H:%M:%S}，星期{weekdays[now.weekday()]}（UTC+8）。"
+    if compact_command in {"手機本地時間", "手機時間", "裝置本地時間", "裝置時間", "本地時間"}:
+        now = datetime.now(TAIPEI_TZ)
+        return (
+            "LINE 不會把手機的本地時鐘或時區傳給機器人，所以我不能假裝直接讀到你的手機時間。"
+            f"目前我能確認的是台灣伺服器時間：{now:%Y/%m/%d %H:%M:%S}（Asia/Taipei，UTC+8）。"
+            "如果你要我回答其他地區的本地時間，請告訴我城市或時區。"
+        )
     # Also prune this user's stale reminders on every incoming chat, not only list requests.
     expired_reminders_removed = purge_expired_reminders(user_id)
     if command in {"記憶", "記憶框架", "我的記憶", "記憶摘要", "最近聊天", "對話記錄"}:
@@ -641,10 +653,6 @@ def handle_personal_command(user_id: str, text: str) -> str | None:
         if match:
             result = connection.execute("DELETE FROM user_notes WHERE id=? AND user_id=?", (int(match.group(1)), user_id))
             return "記事刪除完成。" if result.rowcount else "找不到這筆記事，先傳「記事列表」看看編號吧。"
-        if re.fullmatch(r"(?:請問)?(?:現在)?(?:台灣)?(?:現在)?(?:時間|幾點)(?:是幾點)?[？?。！!]*", command):
-            now = datetime.now(TAIPEI_TZ)
-            weekdays = "一二三四五六日"
-            return f"現在是台灣時間 {now:%Y/%m/%d %H:%M:%S}，星期{weekdays[now.weekday()]}（UTC+8）。"
         if command in {"日期", "今天日期", "今天幾號", "星期幾"}:
             today = datetime.now(TAIPEI_TZ)
             weekdays = "一二三四五六日"
