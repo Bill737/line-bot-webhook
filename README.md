@@ -40,7 +40,7 @@
    若使用 Fish Audio，請在 Render Environment 設定 `VOICE_REPLY_PROVIDER=fish`、`FISH_AUDIO_API_KEY`（Fish API key）、`FISH_AUDIO_REFERENCE_ID`（Fish 音色頁的 model ID），並設 `FISH_AUDIO_MODEL=s2.1-pro-free`。語音預設保留原音色；如要升調才設定 `VOICE_REPLY_PITCH_SEMITONES=1` 或 `2`。Fish Audio 官方標示此 API 模型無需 API 點數；其他模型可能按字元收費，本專案預設不呼叫其他模型。首頁僅顯示目前語音服務與模型，不會顯示 key 或聲線 ID。若使用 Gemini TTS，請將 `VOICE_REPLY_PROVIDER=gemini`；必要時設定 `GEMINI_TTS_VOICE_ID` 和 `GEMINI_TTS_MODEL`。
    設定後重新部署服務。一般回覆預設使用較快的 `gemini-3.5-flash-lite`，可用 `GEMINI_FAST_MODEL` 更改；遇到暫時性服務錯誤時，依序改試 `GEMINI_MODEL`（預設 `gemini-3.6-flash`）與 `GEMINI_FALLBACK_MODEL`（預設 `gemini-3.8-flash`）。
 
-   **網路搜尋回答：** 預設 `WEB_SEARCH_ENABLED=true`。當使用者詢問最新消息、新聞、價格、股價、匯率、賽程、版本、法規、推薦、介紹、查資料，或明確說「搜尋／查一下網路」時，Bot 會使用 Gemini 的 Google Search grounding 查詢公開網路資料，再用胡桃的口吻整理回答，並附上最多三個參考來源。若不需要此功能，可在 Render 設定 `WEB_SEARCH_ENABLED=false`。Google Search grounding 可能依 Google AI Studio 方案計費。
+   **網路搜尋與網頁閱讀：** 預設 `WEB_SEARCH_ENABLED=true`。當使用者詢問最新消息、新聞、歌曲、歌手、專輯、價格、股價、匯率、賽程、版本、法規、推薦、介紹、查資料，或明確說「搜尋／查一下網路」時，Bot 會使用 Gemini 的 Google Search grounding 查詢公開網路資料；若訊息含有公開 `http(s)` 網址，會再使用 URL Context 讀取該網頁內容後回答，並附上可取得的參考來源。歌曲可查背景、專輯、MV 與主題分析；完整歌詞只提供摘要或短摘錄，不逐字重現。若不需要此功能，可在 Render 設定 `WEB_SEARCH_ENABLED=false`。Google Search grounding 可能依 Google AI Studio 方案計費。
 
    **要讓記事、提醒與聊天記憶跨 Render 休眠、重啟及重新部署保留，必須在 Render 設定 PostgreSQL 服務的 `DATABASE_URL`。** 本程式支援 PostgreSQL（例如 Neon）；沒有 `DATABASE_URL` 時會退回本機 SQLite，而 Render 免費執行個體的本機資料可能在重啟、重新部署或休眠後遺失。原始文字僅保留七天；較舊對話會整理成精簡摘要。建立提醒不會改變任何 LINE 對話內容送往 Gemini 的方式。
 
