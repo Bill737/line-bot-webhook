@@ -361,11 +361,13 @@ def fetch_direct_web_context(text: str) -> tuple[str, list[tuple[str, str]]]:
                 timeout=8,
             )
             response.raise_for_status()
-            result_pattern = re.compile(
-                r'<li class="b_algo".*?<h2><a[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?</li>', re.I | re.S
-            )
+            result_pattern = re.compile(r'<li class="b_algo".*?</li>', re.I | re.S)
             results = result_pattern.findall(response.text)
-            for raw_url, raw_title in results[:5]:
+            for result in results[:5]:
+                link_match = re.search(r'<h2><a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', result, re.I | re.S)
+                if not link_match:
+                    continue
+                raw_url, raw_title = link_match.groups()
                 title = re.sub(r"<[^>]+>", "", unescape(raw_title)).strip()
                 target = unquote(unescape(raw_url))
                 encoded_target = parse_qs(urlparse(target).query).get("u", [""])[0]
@@ -377,7 +379,9 @@ def fetch_direct_web_context(text: str) -> tuple[str, list[tuple[str, str]]]:
                 if not target.startswith(("http://", "https://")):
                     continue
                 sources.append((title[:120] or "搜尋結果", target))
-                context_parts.append(f"搜尋結果：{title}\n網址：{target}")
+                snippet_match = re.search(r'<p[^>]*>(.*?)</p>', result, re.I | re.S)
+                snippet = re.sub(r"<[^>]+>", "", unescape(snippet_match.group(1))).strip() if snippet_match else ""
+                context_parts.append(f"搜尋結果：{title}\n網址：{target}\n摘要：{snippet[:600]}")
         except (requests.RequestException, UnicodeError, ValueError) as error:
             logger.warning("Direct web search failed: type=%s", type(error).__name__)
     return "\n\n".join(context_parts)[:18000], sources[:5]
@@ -1388,10 +1392,6 @@ def create_reply(
                     model=model,
                     contents=contents,
                     config=types.GenerateContentConfig(
-                        tools=(
-                            ([types.Tool(google_search=types.GoogleSearch())] if use_web_search else [])
-                            + ([types.Tool(url_context=types.UrlContext())] if use_url_context else [])
-                        ) or None,
                         system_instruction=(
                             HU_TAO_SYSTEM_INSTRUCTION
                             + "\n\n" + time_context
