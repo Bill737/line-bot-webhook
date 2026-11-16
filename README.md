@@ -42,6 +42,8 @@
 
    **網路搜尋與網頁閱讀：** 預設 `WEB_SEARCH_ENABLED=true`。當使用者詢問最新消息、新聞、歌曲、歌手、專輯、價格、股價、匯率、賽程、版本、法規、推薦、介紹、查資料，或明確說「搜尋／查一下網路」時，Bot 會由服務端直接抓取 Bing 公開搜尋結果與摘要，再交給 Gemini 整理；若訊息含有公開 `http(s)` 網址，會直接下載並讀取網頁文字後回答，並附上可取得的參考來源。歌曲可查背景、專輯、MV 與主題分析；完整歌詞只提供摘要或短摘錄，不逐字重現。若不需要此功能，可在 Render 設定 `WEB_SEARCH_ENABLED=false`。
 
+   **唱歌功能：** 若要讓 Bot 產生真正的歌曲音訊，請在 Render 設定 `ELEVENLABS_API_KEY`，並保持 `MUSIC_REPLY_ENABLED=true`；可選 `MUSIC_MODEL=music_v2_5`、`MUSIC_LENGTH_MS=30000`（3–60 秒）。使用「唱一首：明亮俏皮的中文古風原創歌曲」或「唱歌：我想要溫柔的晚安曲」觸發，Bot 會先回覆文字，再以 LINE 音訊訊息推送歌曲。受版權保護的現成歌曲、指定歌手模仿與完整歌詞不會被重製；可改成原創主題、情緒與曲風。Eleven Music API 需要有效的 ElevenLabs 方案與金鑰。
+
    **要讓記事、提醒與聊天記憶跨 Render 休眠、重啟及重新部署保留，必須在 Render 設定 PostgreSQL 服務的 `DATABASE_URL`。** 本程式支援 PostgreSQL（例如 Neon）；沒有 `DATABASE_URL` 時會退回本機 SQLite，而 Render 免費執行個體的本機資料可能在重啟、重新部署或休眠後遺失。原始文字僅保留七天；較舊對話會整理成精簡摘要。建立提醒不會改變任何 LINE 對話內容送往 Gemini 的方式。
 
    請在 GitHub Actions repository secrets 設定既有的 `PUSH_API_KEY`，排程 workflow 才能執行。提醒會用相同已設定金鑰呼叫 Render，不需另設新金鑰。GitHub schedule 使用 UTC，但提醒時間存為 Asia/Taipei（UTC+8）。

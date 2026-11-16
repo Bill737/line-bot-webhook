@@ -66,6 +66,13 @@ except ValueError:
 GEMINI_TTS_VOICE_ID = os.getenv("GEMINI_TTS_VOICE_ID", "").strip()
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
 FISH_AUDIO_REFERENCE_ID = os.getenv("FISH_AUDIO_REFERENCE_ID", "")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+MUSIC_REPLY_ENABLED = os.getenv("MUSIC_REPLY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+MUSIC_MODEL = os.getenv("MUSIC_MODEL", "music_v2_5").strip()
+try:
+    MUSIC_LENGTH_MS = max(3000, min(60000, int(os.getenv("MUSIC_LENGTH_MS", "30000"))))
+except ValueError:
+    MUSIC_LENGTH_MS = 30000
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://line-bot-webhook-thi0.onrender.com").rstrip("/")
 VOICE_CACHE_TTL_SECONDS = 15 * 60
 VOICE_AUDIO_CACHE: dict[str, tuple[bytes, int, float]] = {}
@@ -1123,6 +1130,100 @@ def add_fish_emotion_direction(text: str) -> str:
     return f"{delivery} {paced_text}"
 
 
+SING_COMMAND_PATTERN = re.compile(
+    r"^(?:唱歌|唱一首|唱給我聽|唱给我听|哼唱|來一首|来一首)\s*[:：]?\s*(.*?)\s*$",
+    re.I,
+)
+
+
+def extract_singing_request(text: str) -> str | None:
+    match = SING_COMMAND_PATTERN.match(text.strip())
+    if not match:
+        return None
+    return match.group(1).strip() or "一首明亮、俏皮、帶一點古風的原創中文歌曲"
+
+
+def song_request_reply(song_request: str) -> str:
+    if not MUSIC_REPLY_ENABLED or not ELEVENLABS_API_KEY:
+        return (
+            "我可以幫你做一段真正的原創歌曲，不過目前 Render 還沒設定音樂生成服務的金鑰。"
+            "請在 Render 加上 ELEVENLABS_API_KEY 後重新部署；現成歌曲我不能直接重製原曲或整段歌詞，"
+            "但可以做相同情緒、不同旋律的原創版本。"
+        )
+    return (
+        f"收到啦！我現在幫你把「{song_request[:120]}」做成一段原創歌曲。"
+        "我會避開現成歌曲的原旋律和完整歌詞，稍等一下，音訊做好就傳給你。"
+    )
+
+
+def generate_original_song(song_request: str) -> tuple[str, int] | None:
+    if not MUSIC_REPLY_ENABLED or not ELEVENLABS_API_KEY:
+        return None
+    original_direction = song_request if re.search(r"原創|原创|自創|自创|自己寫|自己写|主題|主题|情緒|情绪|曲風|曲风", song_request) else ""
+    prompt = (
+        "Create an original song for a cheerful, mischievous Hu Tao-inspired LINE companion. "
+        "Do not imitate or reproduce any existing song, artist, melody, lyrics, or copyrighted title. "
+        "Use warm playful female vocals, bright Chinese pop with light traditional Chinese instruments, "
+        "a catchy but completely new melody, and concise original lyrics. "
+        f"User's requested theme or mood: {original_direction[:500] or 'a bright playful farewell to a busy day'}"
+    )
+    try:
+        response = requests.post(
+            "https://api.elevenlabs.io/v1/music",
+            params={"output_format": "mp3_44100_128"},
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+            json={"prompt": prompt, "music_length_ms": MUSIC_LENGTH_MS, "model_id": MUSIC_MODEL},
+            timeout=(10, 120),
+        )
+        if not response.ok:
+            logger.warning("Music generation failed with HTTP %s", response.status_code)
+            return None
+        audio_bytes = response.content
+        if not audio_bytes:
+            return None
+        try:
+            duration_ms = round(MP3(io.BytesIO(audio_bytes)).info.length * 1000)
+        except (OSError, ValueError, AttributeError):
+            duration_ms = MUSIC_LENGTH_MS
+        token = secrets.token_urlsafe(24)
+        with VOICE_AUDIO_LOCK:
+            VOICE_AUDIO_CACHE[token] = (audio_bytes, duration_ms, time.time() + VOICE_CACHE_TTL_SECONDS)
+        return f"{PUBLIC_BASE_URL}/audio/{token}.mp3", duration_ms
+    except (requests.RequestException, OSError, ValueError) as error:
+        logger.warning("Music generation failed: type=%s", type(error).__name__)
+        return None
+
+
+def push_audio_to_line(target: str, audio_url: str, duration_ms: int, label: str) -> None:
+    try:
+        response = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "to": target,
+                "messages": [{
+                    "type": "audio",
+                    "originalContentUrl": audio_url,
+                    "duration": max(1000, min(600000, duration_ms)),
+                }],
+            },
+            timeout=15,
+        )
+        if not response.ok:
+            logger.warning("LINE %s audio push failed with HTTP %s", label, response.status_code)
+    except requests.RequestException as error:
+        logger.warning("LINE %s audio push failed: type=%s", label, type(error).__name__)
+
+
+def generate_and_push_song(target: str, song_request: str) -> None:
+    song_audio = generate_original_song(song_request)
+    if song_audio:
+        push_audio_to_line(target, song_audio[0], song_audio[1], "song")
+
+
 def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
     """Create a short-lived MP3 with Fish Audio or Gemini TTS."""
     provider_key = FISH_AUDIO_API_KEY if VOICE_REPLY_PROVIDER == "fish" else GEMINI_API_KEY
@@ -1552,6 +1653,7 @@ def process_events(events: list[dict[str, Any]]) -> None:
         source = event.get("source") or {}
         image_part = None
         user_message = message.get("text", "") if message.get("type") == "text" else ""
+        song_request = extract_singing_request(user_message) if message.get("type") == "text" else None
         if message.get("type") == "image":
             message_id = message.get("id")
             content_provider = message.get("contentProvider") or {}
@@ -1631,7 +1733,9 @@ def process_events(events: list[dict[str, Any]]) -> None:
         if image_part is not None:
             reply_text = create_reply(user_message, source.get("userId"), image_part)
         elif message.get("type") in {"text", "sticker"}:
-            reply_text = create_reply(user_message, source.get("userId"), weather_context=weather_context)
+            reply_text = song_request_reply(song_request) if song_request else create_reply(
+                user_message, source.get("userId"), weather_context=weather_context
+            )
             if weather_data_loaded:
                 reply_text += "\n\n🌦️ 天氣資料來源：Open-Meteo"
         reply_messages = expressive_reply_messages(reply_text)
@@ -1655,31 +1759,19 @@ def process_events(events: list[dict[str, Any]]) -> None:
                         and message.get("text", "").strip() not in {"忘記我", "清除記憶", "重置記憶"}
                         and not message.get("text", "").strip().startswith(("記事", "提醒", "記憶", "最近聊天", "對話記錄"))):
                     record_interaction(source["userId"], user_message, reply_text)
-                voice_audio = synthesize_voice_reply(reply_text)
                 voice_target = source.get("groupId") or source.get("roomId") or source.get("userId")
-                if voice_audio and voice_target:
+                voice_audio = None
+                if song_request and voice_target and MUSIC_REPLY_ENABLED and ELEVENLABS_API_KEY:
+                    threading.Thread(
+                        target=generate_and_push_song,
+                        args=(voice_target, song_request),
+                        daemon=True,
+                    ).start()
+                else:
+                    voice_audio = synthesize_voice_reply(reply_text)
+                if not song_request and voice_audio and voice_target:
                     audio_url, duration_ms = voice_audio
-                    try:
-                        voice_response = requests.post(
-                            "https://api.line.me/v2/bot/message/push",
-                            headers={
-                                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-                                "Content-Type": "application/json",
-                            },
-                            json={
-                                "to": voice_target,
-                                "messages": [{
-                                    "type": "audio",
-                                    "originalContentUrl": audio_url,
-                                    "duration": duration_ms,
-                                }],
-                            },
-                            timeout=15,
-                        )
-                        if not voice_response.ok:
-                            logger.warning("LINE voice push failed with HTTP %s", voice_response.status_code)
-                    except requests.RequestException as error:
-                        logger.warning("LINE voice push failed: type=%s", type(error).__name__)
+                    push_audio_to_line(voice_target, audio_url, duration_ms, "voice")
             else:
                 # Do not log response bodies; they may contain user or request data.
                 destination = str(event.get("destination") or "")
@@ -1755,6 +1847,9 @@ def health_check():
                 FISH_AUDIO_API_KEY if VOICE_REPLY_PROVIDER == "fish" else GEMINI_API_KEY
             )
         ),
+        "song_generation_enabled": bool(MUSIC_REPLY_ENABLED and ELEVENLABS_API_KEY),
+        "song_generation_model": MUSIC_MODEL,
+        "song_generation_duration_ms": MUSIC_LENGTH_MS,
         "voice_reply_provider": VOICE_REPLY_PROVIDER,
         "voice_reply_model": VOICE_REPLY_MODEL,
         "voice_reply_mode": (
