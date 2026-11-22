@@ -78,6 +78,8 @@ VOICE_CACHE_TTL_SECONDS = 15 * 60
 VOICE_AUDIO_CACHE: dict[str, tuple[bytes, int, float]] = {}
 VOICE_AUDIO_LOCK = threading.Lock()
 REMINDER_DISPATCH_LOCK = threading.Lock()
+REMINDER_WATCHDOG_STARTED = False
+REMINDER_WATCHDOG_LOCK = threading.Lock()
 MEMORY_DB_PATH = os.getenv("MEMORY_DB_PATH", "data/hu_tao_memory.sqlite3")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
@@ -234,6 +236,11 @@ def init_memory_db() -> None:
 
 
 init_memory_db()
+
+
+@app.on_event("startup")
+def start_background_services() -> None:
+    start_reminder_watchdog()
 
 
 def get_user_state(user_id: str) -> tuple[str, int, int]:
@@ -1062,6 +1069,29 @@ def dispatch_due_reminders() -> int:
     """Serialize reminder sends so timer and GitHub fallback cannot duplicate them."""
     with REMINDER_DISPATCH_LOCK:
         return _dispatch_due_reminders()
+
+
+def _reminder_watchdog() -> None:
+    """Poll the durable reminder table while the Render process is awake."""
+    while True:
+        try:
+            sent = dispatch_due_reminders()
+            if sent:
+                logger.info("Reminder watchdog sent %s reminder(s)", sent)
+        except Exception as error:
+            logger.warning("Reminder watchdog check failed: type=%s", type(error).__name__)
+        time.sleep(60)
+
+
+def start_reminder_watchdog() -> None:
+    global REMINDER_WATCHDOG_STARTED
+    with REMINDER_WATCHDOG_LOCK:
+        if REMINDER_WATCHDOG_STARTED:
+            return
+        REMINDER_WATCHDOG_STARTED = True
+    thread = threading.Thread(target=_reminder_watchdog, name="reminder-watchdog", daemon=True)
+    thread.start()
+    logger.info("Reminder watchdog started: interval=60s")
 
 
 def schedule_near_term_dispatch(due: datetime) -> None:
@@ -1936,6 +1966,8 @@ def health_check():
         "taiwan_time_awareness_enabled": True,
         "calendar_reminders_enabled": True,
         "minute_reminders_enabled": True,
+        "reminder_watchdog_enabled": True,
+        "reminder_watchdog_interval_seconds": 60,
         "reminder_cleanup_enabled": True,
         "reminder_expiry_grace_minutes": 10,
         "reminder_expiry_comparison": "UTC-normalized",
