@@ -1969,6 +1969,8 @@ def health_check():
         "reminder_watchdog_enabled": True,
         "reminder_watchdog_interval_seconds": 60,
         "reminder_cleanup_enabled": True,
+        "reminder_storage_mode": "temporary_pending_queue",
+        "reminder_history_retained": False,
         "reminder_expiry_grace_minutes": 10,
         "reminder_expiry_comparison": "UTC-normalized",
         "image_understanding_enabled": bool(GEMINI_API_KEY and LINE_CHANNEL_ACCESS_TOKEN),
