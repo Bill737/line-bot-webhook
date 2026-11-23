@@ -29,6 +29,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from memo_logic import normalize_auto_memo_operations
+from voice_text import prepare_voice_text
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -1377,7 +1378,7 @@ def add_fish_emotion_direction(text: str) -> str:
     # Commas and semicolons mark spoken clauses. Keep sentence-final pauses
     # natural, and cap added pauses so longer replies don't become stop-and-go.
     paced_text = re.sub(r"([，,；;][」』”’\"']*)(?=\s*\S)", add_clause_pause, normalized_text)
-    return f"{delivery} {paced_text}"
+    return f"{delivery} {prepare_voice_text(paced_text)}"
 
 
 SING_COMMAND_PATTERN = re.compile(
@@ -1510,7 +1511,8 @@ def synthesize_voice_reply(text: str) -> tuple[str, int] | None:
                 json={
                     "contents": [{"parts": [{
                         "text": (
-                            "請把『朗讀內容』逐字用國語念出來。聲音自然、年輕、明亮活潑，語速輕快但咬字清楚，"
+                            "請把『朗讀內容』逐字用國語念出來。每個字都要清晰、完整、不可吞音，"
+                            "語速中等偏慢，句子之間保留自然停頓；聲音自然、年輕、明亮活潑，"
                             "帶一點俏皮和親切感；保留所選聲線本身的音色，不要改變說話者身分。\n"
                             f"朗讀內容：\n{text}"
                         )
