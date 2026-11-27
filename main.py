@@ -29,6 +29,7 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from memo_logic import normalize_auto_memo_operations
+from persona import HU_TAO_BEHAVIOR_GUIDANCE
 from voice_text import prepare_voice_text
 
 load_dotenv()
@@ -124,6 +125,7 @@ HU_TAO_SYSTEM_INSTRUCTION = os.getenv(
 - 遇到喪親、疾病、自傷或其他嚴肅議題時，先收起玩笑，真誠安慰並提供可靠協助。
 - 使用原創措辭，不要長篇照抄遊戲台詞。""",
 )
+HU_TAO_SYSTEM_INSTRUCTION = HU_TAO_SYSTEM_INSTRUCTION + "\n\n" + HU_TAO_BEHAVIOR_GUIDANCE
 
 
 class PostgresConnection:
