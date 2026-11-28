@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from memo_logic import normalize_auto_memo_operations
 from persona import HU_TAO_BEHAVIOR_GUIDANCE
 from voice_text import prepare_voice_text
+from free_music_generator import generate_free_song
 
 load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -72,6 +73,8 @@ FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
 FISH_AUDIO_REFERENCE_ID = os.getenv("FISH_AUDIO_REFERENCE_ID", "")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 MUSIC_REPLY_ENABLED = os.getenv("MUSIC_REPLY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+FREE_MUSIC_ENABLED = os.getenv("FREE_MUSIC_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+MUSIC_PROVIDER = os.getenv("MUSIC_PROVIDER", "auto").strip().lower()
 MUSIC_MODEL = os.getenv("MUSIC_MODEL", "music_v2_5").strip()
 try:
     MUSIC_LENGTH_MS = max(3000, min(60000, int(os.getenv("MUSIC_LENGTH_MS", "30000"))))
@@ -1396,11 +1399,31 @@ def extract_singing_request(text: str) -> str | None:
     return match.group(1).strip() or "一首明亮、俏皮、帶一點古風的原創中文歌曲"
 
 
+def music_generation_available() -> bool:
+    if not MUSIC_REPLY_ENABLED:
+        return False
+    if MUSIC_PROVIDER in {"free", "huggingface", "ace_step"}:
+        return FREE_MUSIC_ENABLED
+    if MUSIC_PROVIDER == "auto" and not ELEVENLABS_API_KEY:
+        return FREE_MUSIC_ENABLED
+    return bool(ELEVENLABS_API_KEY)
+
+
 def song_request_reply(song_request: str) -> str:
-    if not MUSIC_REPLY_ENABLED or not ELEVENLABS_API_KEY:
+    if not MUSIC_REPLY_ENABLED:
+        return "唱歌功能目前關閉了；要重新開啟，請在 Render 設定 MUSIC_REPLY_ENABLED=true。"
+    using_free_provider = MUSIC_PROVIDER in {"free", "huggingface", "ace_step"} or (
+        MUSIC_PROVIDER == "auto" and not ELEVENLABS_API_KEY
+    )
+    if using_free_provider and FREE_MUSIC_ENABLED:
+        return (
+            f"收到啦！我會用免費的 ACE-Step Space 把「{song_request[:120]}」做成原創中文歌曲。"
+            "公共 GPU 可能需要排隊；若主力空間滿載，會嘗試改做純配樂備援，仍會保留文字回覆，不讓整個聊天失效。"
+        )
+    if not ELEVENLABS_API_KEY:
         return (
             "我可以幫你做一段真正的原創歌曲，不過目前 Render 還沒設定音樂生成服務的金鑰。"
-            "請在 Render 加上 ELEVENLABS_API_KEY 後重新部署；現成歌曲我不能直接重製原曲或整段歌詞，"
+            "請在 Render 設定 ELEVENLABS_API_KEY，或開啟 FREE_MUSIC_ENABLED 使用免費 Space；現成歌曲我不能直接重製原曲或整段歌詞，"
             "但可以做相同情緒、不同旋律的原創版本。"
         )
     return (
@@ -1410,8 +1433,21 @@ def song_request_reply(song_request: str) -> str:
 
 
 def generate_original_song(song_request: str) -> tuple[str, int] | None:
-    if not MUSIC_REPLY_ENABLED or not ELEVENLABS_API_KEY:
+    if not MUSIC_REPLY_ENABLED:
         return None
+    using_free_provider = MUSIC_PROVIDER in {"free", "huggingface", "ace_step"} or (
+        MUSIC_PROVIDER == "auto" and not ELEVENLABS_API_KEY
+    )
+    if using_free_provider and FREE_MUSIC_ENABLED:
+        free_audio = generate_free_song(song_request, round(MUSIC_LENGTH_MS / 1000))
+        if free_audio:
+            audio_bytes, duration_ms = free_audio
+            token = secrets.token_urlsafe(24)
+            with VOICE_AUDIO_LOCK:
+                VOICE_AUDIO_CACHE[token] = (audio_bytes, duration_ms, time.time() + VOICE_CACHE_TTL_SECONDS)
+            return f"{PUBLIC_BASE_URL}/audio/{token}.mp3", duration_ms
+        if MUSIC_PROVIDER in {"free", "huggingface", "ace_step"} or not ELEVENLABS_API_KEY:
+            return None
     original_direction = song_request if re.search(r"原創|原创|自創|自创|自己寫|自己写|主題|主题|情緒|情绪|曲風|曲风", song_request) else ""
     prompt = (
         "Create an original song for a cheerful, mischievous Hu Tao-inspired LINE companion. "
@@ -2026,7 +2062,7 @@ def process_events(events: list[dict[str, Any]]) -> None:
                         ).start()
                 voice_target = source.get("groupId") or source.get("roomId") or source.get("userId")
                 voice_audio = None
-                if song_request and voice_target and MUSIC_REPLY_ENABLED and ELEVENLABS_API_KEY:
+                if song_request and voice_target and music_generation_available():
                     threading.Thread(
                         target=generate_and_push_song,
                         args=(voice_target, song_request),
@@ -2121,7 +2157,9 @@ def health_check():
                 FISH_AUDIO_API_KEY if VOICE_REPLY_PROVIDER == "fish" else GEMINI_API_KEY
             )
         ),
-        "song_generation_enabled": bool(MUSIC_REPLY_ENABLED and ELEVENLABS_API_KEY),
+        "song_generation_enabled": music_generation_available(),
+        "free_song_generation_enabled": bool(MUSIC_REPLY_ENABLED and FREE_MUSIC_ENABLED),
+        "music_provider": MUSIC_PROVIDER,
         "song_generation_key_configured": bool(ELEVENLABS_API_KEY),
         "song_generation_model": MUSIC_MODEL,
         "song_generation_duration_ms": MUSIC_LENGTH_MS,

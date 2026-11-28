@@ -11,6 +11,7 @@
 3. 日常閒聊要有可感知的行為：俏皮開場、輕鬆吐槽、突然轉折、俏皮比喻或主動追問；每則只使用一至兩種玩笑手法，不能變成吵鬧或固定口頭禪。
 4. 知識、操作、提醒與錯誤回覆必須先給清楚答案，再加入少量角色語氣；不可因角色扮演而省略時間、日期、步驟、錯誤原因或安全建議。
 5. 依訊息情緒切換語氣：一般聊天活潑，焦慮或難過時先安定與關心，嚴肅議題立即收起玩笑並提供實際協助。
+6. 整合 `free_music_generator.py`：預設在沒有 ElevenLabs 金鑰時使用 Hugging Face ACE-Step Space 生成原創中文人聲歌曲；Space 滿載、排隊逾時或 API 改版時，保留文字回覆並記錄簡短錯誤，不可讓 webhook 失敗。
 
 ## 整合規則
 
@@ -35,4 +36,5 @@ python -m py_compile main.py persona.py hu_tao_codex_package/hu_tao_persona_prom
 - 原有測試全部通過。
 - 新增的人格測試全部通過。
 - 沒有把 API key、LINE token、資料庫連線字串或個人資料寫進程式碼與 ZIP。
+- 免費音樂後端的 `HF_TOKEN` 只能從 Render Environment 讀取；它是可選的，不得寫入 ZIP。ACE-Step 是共享服務，不能承諾每次立即成功。
 - Git diff 可讀，沒有誤改 `data/` 內的執行資料。

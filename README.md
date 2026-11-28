@@ -53,7 +53,7 @@
 
    **LINE 訊息自動維護備忘：** 預設 `MEMO_AUTO_UPDATE_ENABLED=true`。一般訊息成功回覆後，Bot 會在背景判斷是否包含穩定的個人偏好、稱呼、習慣、長期目標或持續事項，並自動新增、更新、封存或刪除對應備忘；普通閒聊、一次性天氣、問候與敏感資料不會保存。若要關閉自動判斷，可在 Render 設定 `MEMO_AUTO_UPDATE_ENABLED=false`。明確的 `記住`、`備忘修改`、`備忘刪除` 指令仍由程式直接處理。
 
-   **唱歌功能：** 在 Render 的 `line-bot-webhook` 服務開啟 `Environment` → `Add Environment Variable`，新增 `ELEVENLABS_API_KEY`，值填 ElevenLabs 控制台建立的 API key；再確認 `MUSIC_REPLY_ENABLED=true` 並重新部署。可選 `MUSIC_MODEL=music_v2_5`、`MUSIC_LENGTH_MS=30000`（3–60 秒）。部署後開啟服務首頁，確認 JSON 的 `song_generation_enabled` 與 `song_generation_key_configured` 都是 `true`。使用「唱一首：明亮俏皮的中文古風原創歌曲」或「唱歌：我想要溫柔的晚安曲」觸發，Bot 會先回覆文字，再以 LINE 音訊訊息推送歌曲。受版權保護的現成歌曲、指定歌手模仿與完整歌詞不會被重製；可改成原創主題、情緒與曲風。Eleven Music API 需要有效的 ElevenLabs 方案與金鑰；不要把金鑰寫進 GitHub、聊天或程式碼。
+   **唱歌功能：** 預設 `MUSIC_PROVIDER=auto`。若 Render 沒有 `ELEVENLABS_API_KEY`，Bot 會改用免費 Hugging Face ACE-Step Space 嘗試生成原創中文人聲歌曲；共享 Space 可能排隊或暫時滿載，失敗時仍會保留文字回覆。可在 Render 設定 `HF_TOKEN`（Read token，可選）降低匿名限流，並保持 `FREE_MUSIC_ENABLED=true`。若要使用 ElevenLabs，設定 `MUSIC_PROVIDER=elevenlabs`、`ELEVENLABS_API_KEY` 與 `MUSIC_REPLY_ENABLED=true`。使用「唱一首：明亮俏皮的中文古風原創歌曲」或「唱歌：我想要溫柔的晚安曲」觸發，Bot 會先回覆文字，再以 LINE 音訊訊息推送歌曲。受版權保護的現成歌曲、指定歌手模仿與完整歌詞不會被重製；不要把任何金鑰寫進 GitHub、聊天或程式碼。
 
    **記事與聊天記憶若要跨 Render 休眠、重啟及重新部署保留，必須在 Render 設定 PostgreSQL 服務的 `DATABASE_URL`。** 提醒則只是暫存佇列：到期成功送出或逾期後會自動刪除，不保留提醒歷史。沒有 `DATABASE_URL` 時會退回本機 SQLite，而 Render 免費執行個體的記事與記憶可能在重啟、重新部署或休眠後遺失。原始文字僅保留七天；較舊對話會整理成精簡摘要。建立提醒不會改變任何 LINE 對話內容送往 Gemini 的方式。
 
