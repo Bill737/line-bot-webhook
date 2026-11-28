@@ -2122,6 +2122,7 @@ def health_check():
             )
         ),
         "song_generation_enabled": bool(MUSIC_REPLY_ENABLED and ELEVENLABS_API_KEY),
+        "song_generation_key_configured": bool(ELEVENLABS_API_KEY),
         "song_generation_model": MUSIC_MODEL,
         "song_generation_duration_ms": MUSIC_LENGTH_MS,
         "voice_reply_provider": VOICE_REPLY_PROVIDER,
