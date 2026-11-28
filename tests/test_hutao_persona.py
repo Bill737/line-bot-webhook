@@ -17,6 +17,10 @@ class HuTaoPersonaTests(unittest.TestCase):
         for phrase in ("card games", "cooking", "fishing", "inviting friends to gatherings", "ordinary topic into a witty observation", "caring for and spoiling her"):
             self.assertIn(phrase, HU_TAO_BEHAVIOR_GUIDANCE)
 
+    def test_persona_has_actionable_lively_delivery(self):
+        for phrase in ("playful hook", "sudden playful turn", "light teasing", "playful metaphor", "ask a lively follow-up"):
+            self.assertIn(phrase, HU_TAO_BEHAVIOR_GUIDANCE)
+
 
 if __name__ == "__main__":
     unittest.main()
